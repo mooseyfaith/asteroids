@@ -1,0 +1,41 @@
+#version 150
+
+uniform vec3 u_camera_world_position;
+uniform vec3 u_light_world_position;
+uniform sampler2D u_texture;
+
+smooth in vec3 world_position;
+smooth in vec3 world_normal;
+in vec2 uv;
+
+out vec4 color;
+
+void main() {
+	vec3 light_distance = u_light_world_position - world_position;
+	
+	vec3 normal = normalize(world_normal);
+	vec3 light_dir = normalize(light_distance);
+	vec3 camera_dir = normalize(u_camera_world_position - world_position);
+	vec3 r = (normal * (2.0 * dot(light_dir, normal)) - light_dir);
+
+	float attenuation = 1.0 / (1 + 0.25 * dot(light_distance, light_distance));
+
+	float diffuse = max(0.0, dot(normal, light_dir));	
+	float specular = pow(max(0.0, dot(camera_dir, r)), 15) * (1.0 - step(diffuse, 0.0));
+
+#if 1
+	float gamma = 1.0/2.2;
+	float ilumination = pow((diffuse + specular) * attenuation, gamma) + 0.3;
+#else
+	float ilumination = (diffuse + specular) * attenuation;
+#endif
+
+#if 1
+
+	color = vec4(texture(u_texture, uv).rgb * ilumination, 1.0f);
+	//color = vec4(specular, specular, specular, 1.0f);
+	//color = vec4(ilumination, ilumination, ilumination, 1.0f);
+#else	
+	color = vec4(world_normal * 0.5 + vec3(0.5), 1.0);
+#endif
+}

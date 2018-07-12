@@ -1,0 +1,14 @@
+#version 150
+
+in vec2 a_position;
+in vec2 a_uv;
+in vec4 a_color;
+
+out vec2 f_uv;
+out vec4 f_color;
+
+void main() {
+	f_uv = a_uv;
+	f_color = a_color;
+	gl_Position = vec4(a_position, 0, 1);
+}

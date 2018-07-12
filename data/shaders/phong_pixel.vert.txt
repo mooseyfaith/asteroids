@@ -1,0 +1,49 @@
+#version 150
+
+//#define BONE_ANIMATION
+
+uniform mat4 u_camera_to_clip_projection;
+uniform mat4x3 u_world_to_camera_transform;
+uniform mat4x3 u_object_to_world_transform;
+
+#if defined(BONE_ANIMATION)
+#define MAX_BONE_COUNT 32
+
+uniform mat4x3 u_bone_transforms[MAX_BONE_COUNT];
+#endif
+
+in vec3 a_position;
+in vec3 a_normal;
+in vec2 a_uv;
+
+#if defined(BONE_ANIMATION)
+in vec4 a_bone_indices; // somehow it doesn't like integer uvec4 -.-, why gl why?
+in vec4 a_bone_weights;
+#endif
+
+smooth out vec3 world_position;
+smooth out vec3 world_normal;
+out vec2 uv;
+
+void main() {
+#if defined(BONE_ANIMATION)
+	world_position = vec3(0.0f);
+	world_normal = vec3(0.0f);
+
+	for (int i = 0; i < 4; ++i) {
+		uint index = uint(a_bone_indices[i]);
+		world_position += (u_bone_transforms[index] * vec4(a_position, 1.0f)) * a_bone_weights[i];
+		world_normal += (u_bone_transforms[index] * vec4(a_normal, 0.0f)) * a_bone_weights[i];
+	}
+
+	world_position = u_object_to_world_transform * vec4(world_position, 1.0f);
+	world_normal   = u_object_to_world_transform * vec4(world_normal, 0.0f);
+#else
+	world_position = u_object_to_world_transform * vec4(a_position, 1.0f);
+	world_normal   = u_object_to_world_transform * vec4(a_normal, 0.0f);
+#endif
+	
+	uv = a_uv;
+
+	gl_Position = u_camera_to_clip_projection * vec4(u_world_to_camera_transform * vec4(world_position, 1.0), 1.0);
+}

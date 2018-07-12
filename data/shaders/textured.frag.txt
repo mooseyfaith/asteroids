@@ -1,0 +1,30 @@
+
+uniform sampler2D u_texture;
+uniform float u_alpha_threshold;
+
+in vec2 f_uv;
+in vec4 f_color;
+
+out vec4 out_color;
+
+vec4 grayscale(vec4 color) {
+	return vec4(vec3((color.r + color.g + color.b) / 3.0f), color.a);
+}
+
+void main() {
+	vec4 color = texture2D(u_texture, f_uv);
+
+	if (color.a < u_alpha_threshold)
+		discard;
+
+#if defined GRAYSCALE_COLOR
+
+    out_color = grayscale(color * f_color);
+
+#else 
+
+    out_color = color * f_color;
+
+#endif
+
+}
