@@ -47,6 +47,7 @@ struct Application_State {
     Font font;
     
     mat4f camera_to_clip_projection;
+    mat4f clip_to_camera_projection;
     
     struct Camera {
         union { mat4x3f to_world_transform, inverse_view_matrix; };
@@ -63,7 +64,13 @@ struct Application_State {
     Phong_Material ship_material, astroid_material, beam_material;
     
     Mesh ship_mesh, astroid_mesh, beam_mesh;
-    mat4x3f ship_transform, astroid_transform, beam_transform;
+    mat4x3f astroid_transform, beam_transform;
+    
+    struct {
+        mat4x3f transform;
+        f32 orientation;
+        vec3f velocity;
+    } ship;
     
     bool in_debug_mode;
 };
@@ -109,6 +116,7 @@ APP_INIT_DEC(application_init) {
     debug_update_camera(state);
     
     state->camera_to_clip_projection = make_perspective_fov_projection(60.0f, width_over_height(Reference_Resolution));
+    state->clip_to_camera_projection = make_inverse_perspective_projection(state->camera_to_clip_projection);
     
     init_immediate_render_context(&state->immediate_render_context, &state->world_to_camera_transform, &state->camera_to_clip_projection, KILO(64), &state->persistent_memory.allocator);
     
@@ -180,17 +188,17 @@ APP_INIT_DEC(application_init) {
         state->ship_mesh = make_mesh(source, &state->persistent_memory.allocator);
         free(&state->transient_memory.allocator, source.data);
         
-        state->ship_transform = MAT4X3_IDENTITY;
+        state->ship.transform = MAT4X3_IDENTITY;
         
         state->ship_material.bind_material = bind_phong_material;
         state->ship_material.shader = &state->phong_shader;
         state->ship_material.camera_to_clip_projection = &state->camera_to_clip_projection;
         state->ship_material.world_to_camera_transform = &state->world_to_camera_transform;
-        state->ship_material.object_to_world_transform = &state->ship_transform;
+        state->ship_material.object_to_world_transform = &state->ship.transform;
         
         glGenTextures(1, &state->ship_material.texture_object);
         glBindTexture(GL_TEXTURE_2D, state->ship_material.texture_object);
-        rgb32 color = make_rgb32(0.1f, 0.1f, 0.8f);
+        rgb32 color = make_rgb32(0.85f, 0.85f, 0.9f);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, &color);
     }
     
@@ -259,7 +267,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     if (input->left_alt.is_active && was_pressed(input->keys[VK_RETURN]))
         state->main_window_is_fullscreen = !state->main_window_is_fullscreen;
     
-    
     // enable to keep Reference_Resolution aspect ratio and add black borders
 #if 0
     if (!platform_api->window(platform_api, 0, S("Astroids"), &state->main_window_area, true, state->main_window_is_fullscreen, 0.0f))
@@ -278,7 +285,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     clear(&state->transient_memory.memory_growing_stack);
     
-    set_auto_viewport(state->main_window_area.size, render_resolution, vec4f{ 0.05f, 0.05f, 0.05f, 1.0f }, vec4f{ 0.05f, 0.05f, 0.05f, 1.0f });
+    vec4f background_color = vec4f{ 0.1f, 0.1f, 0.3f, 1.0f };
+    set_auto_viewport(state->main_window_area.size, render_resolution, vec4f{ 0.05f, 0.05f, 0.05f, 1.0f }, background_color);
     
     // enable to scale text relative to Reference_Resolution
 #if 0
@@ -293,6 +301,18 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     if (was_pressed(input->keys[VK_F1]))
         state->in_debug_mode = !state->in_debug_mode;
+    
+    //
+    // calculate game area from camera projection
+    //
+    
+    mat4x3f world_to_camera_transform = make_inverse_unscaled_transform(state->camera.to_world_transform);
+    f32 depth = get_clip_plane_z(state->camera_to_clip_projection, world_to_camera_transform, vec3f{});
+    
+    vec3f bottem_left_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{ -1.0f, 1.0f, depth });
+    vec3f top_right_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{ 1.0f, -1.0f, depth });
+    
+    vec3f area_size = top_right_corner - bottem_left_corner;
     
     // update debug camera
     if (state->in_debug_mode) {
@@ -350,11 +370,71 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         draw_line(imc, vec3f{}, VEC3_X_AXIS * 5, make_rgba32(1.0f, 0.0f, 0.0f));
         draw_line(imc, vec3f{}, VEC3_Y_AXIS * 5, make_rgba32(0.0f, 1.0f, 0.0f));
         draw_line(imc, vec3f{}, VEC3_Z_AXIS * 5, make_rgba32(0.0f, 0.0f, 1.0f));
+        
+        // draw game area
+        draw_rect(imc, bottem_left_corner, vec3{ area_size.x, 0.0f, 0.0f }, vec3{ 0.0f, 0.0f, area_size.z }, make_rgba32(1.0f, 1.0f, 0.0f));
+        draw_rect(imc, vec3f{}, vec3{ 1.0f, 0.0f, 0.0f}, vec3{0.0f, 0.0f, 1.0f}, make_rgba32(1.0f, 1.0f, 0.0f));
     }
     else {
         state->world_to_camera_transform =  make_inverse_unscaled_transform(state->camera.to_world_transform);
         
+        vec3f direction = {};
         
+        f32 rotation = 0.0f;
+        f32 accelaration = 0.0f;
+        
+        f32 Max_Velocity = 300.0f;
+        f32 Acceleration_Per_Second = 50.0f;
+        f32 Min_Acceleraton = Acceleration_Per_Second * 0.1f;
+        
+        if (input->keys['W'].is_active)
+            accelaration += Acceleration_Per_Second * delta_seconds;
+        
+        if (was_pressed(input->keys['W'])) {
+            accelaration = MAX(Min_Acceleraton, accelaration);
+        }
+        
+        // rotate counter clockwise; mathematically positive
+        if (input->keys['A'].is_active)
+            rotation += 1.0f;
+        
+        // rotate clockwise; mathematically negative
+        if (input->keys['D'].is_active)
+            rotation -= 1.0f;
+        
+        state->ship.orientation += rotation * PIf * delta_seconds;
+        
+        vec3f accelaration_vector = state->ship.transform.forward * accelaration;
+        
+        state->ship.velocity += accelaration_vector;
+        f32 v2 = MIN(squared_length(state->ship.velocity), Max_Velocity * Max_Velocity);
+        
+        state->ship.velocity = normalize_or_zero(state->ship.velocity) * sqrt(v2);
+        
+        state->ship.transform.translation += state->ship.velocity * delta_seconds;
+        
+        if (state->ship.transform.translation.x - bottem_left_corner.x < 0.0f) {
+            state->ship.transform.translation.x = area_size.x - dirty_mod(state->ship.transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
+        }
+        else {
+            state->ship.transform.translation.x = dirty_mod(state->ship.transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
+        }
+        
+        if (state->ship.transform.translation.z - bottem_left_corner.z < 0.0f) {
+            state->ship.transform.translation.z = area_size.z - dirty_mod(state->ship.transform.translation.z - bottem_left_corner.z, area_size.z) + bottem_left_corner.z;
+        }
+        else {
+            state->ship.transform.translation.z = dirty_mod(state->ship.transform.translation.z - bottem_left_corner.z, area_size.z) + bottem_left_corner.z;
+        }
+        
+        state->ship.transform = make_transform(make_quat(VEC3_Y_AXIS, state->ship.orientation), state->ship.transform.translation);
+        
+        draw_line(imc, state->ship.transform.translation, state->ship.transform.translation + accelaration_vector, make_rgba32(1.0f, 0.0f, 0.0f));
+        
+        draw_line(imc, state->ship.transform.translation,  state->ship.transform.translation + state->ship.velocity, make_rgba32(1.0f, 1.0f, 0.0f));
+        
+        
+        draw_line(imc, state->ship.transform.translation,  state->ship.transform.translation + state->ship.transform.forward, make_rgba32(0.0f, 0.0f, 1.0f));
     }
     
     glUseProgram(state->phong_shader.program_object);
