@@ -7,13 +7,10 @@
 
 Pixel_Dimensions const Reference_Resolution = { 1280, 720 };
 
-f32 const Camera_Move_Speed = 20.0f;
-f32 const Camera_Mouse_Sensitivity = 2.0f * PIf / 2048.0f;
+f32 const Debug_Camera_Move_Speed = 50.0f;
+f32 const Debug_Camera_Mouse_Sensitivity = 2.0f * PIf / 2048.0f;
 vec3f const Debug_Camera_Axis_Alpha = VEC3_Y_AXIS;
 vec3f const Debug_Camera_Axis_Beta = VEC3_X_AXIS;
-
-f32 const Player_Rotation_Speed = PIf * 4.0f;
-f32 const Player_Movement_Speed = 12.0f;
 
 struct Application_State {
     Memory_Growing_Stack_Allocator_Info persistent_memory;
@@ -67,12 +64,35 @@ struct Application_State {
     mat4x3f astroid_transform, beam_transform;
     
     struct {
+        GLuint program_object;
+        
+        union {
+            struct {
+                GLint u_camera_to_clip_projection;
+                GLint u_world_to_camera_transform;
+                GLint u_object_to_world_transform;
+                GLint u_camera_world_position;
+                GLint u_bone_transforms;
+                GLint u_light_world_positions;
+                GLint u_light_diffuse_colors;
+                GLint u_light_specular_colors;
+                GLint u_light_count;
+                GLint u_ambient_color;
+                GLint u_diffuse_texture;
+                GLint u_diffuse_color;
+            };
+            GLint uniforms[12];
+        };
+    } phong_shader_ex;
+    
+    struct Ship_Entity {
         mat4x3f transform;
         f32 orientation;
         vec3f velocity;
     } ship;
     
     bool in_debug_mode;
+    bool pause_game;
 };
 
 void debug_update_camera(Application_State *state) {
@@ -237,6 +257,65 @@ APP_INIT_DEC(application_init) {
     state->camera.to_world_transform = make_transform(make_quat(VEC3_X_AXIS, PIf * -0.5f), vec3f{ 0.0f, 80.0f, 0.0f });
     state->main_window_area = { -1, -1, 800, 450 };
     
+    {
+        string shader_source = platform_api->read_text_file(S("shaders/phong_pixel.shader.txt"), &state->transient_memory.allocator);
+        assert(shader_source.count);
+        
+        defer { free(&state->transient_memory.allocator, shader_source.data); };
+        
+        Shader_Attribute_Info attributes[] = {
+            { Vertex_Position_Index, "a_position" },
+            { Vertex_UV_Index,       "a_uv" },
+            { Vertex_Color_Index,    "a_color" },
+        };
+        
+        // please make shure that the order is the same as
+        // in phong_shader_ex struct
+        const char *uniform_names[] = {
+            "u_camera_to_clip_projection",
+            "u_world_to_camera_transform",
+            "u_object_to_world_transform",
+            "u_camera_world_position",
+            "u_bone_transforms",
+            "u_light_world_positions",
+            "u_light_diffuse_colors",
+            "u_light_specular_colors",
+            "u_light_count",
+            "u_ambient_color",
+            "u_diffuse_texture",
+            "u_diffuse_color",
+        };
+        assert(ARRAY_COUNT(uniform_names) == ARRAY_COUNT(state->phong_shader_ex.uniforms));
+        
+        string global_defines = S(
+            "#version 150\n"
+            "#define MAX_LIGHT_COUNT 10\n"
+            "#define WITH_DIFFUSE_COLOR\n"
+            //"#define DEBUG_NORMALS\n"
+            );
+        
+        string vertex_shader_sources[] = {
+            global_defines,
+            S("#define VERTEX_SHADER\n"),
+            shader_source,
+        };
+        
+        string fragment_shader_sources[] = {
+            global_defines,
+            S("#define FRAGMENT_SHADER\n"),
+            shader_source,
+        };
+        
+        GLuint shader_objects[2];
+        shader_objects[0] = make_shader_object(GL_VERTEX_SHADER, ARRAY_WITH_COUNT(vertex_shader_sources), &state->transient_memory.allocator);
+        shader_objects[1] = make_shader_object(GL_FRAGMENT_SHADER, ARRAY_WITH_COUNT(fragment_shader_sources), &state->transient_memory.allocator);
+        
+        state->phong_shader_ex.program_object = make_shader_program(ARRAY_WITH_COUNT(shader_objects), false, ARRAY_WITH_COUNT(attributes), uniform_names, ARRAY_WITH_COUNT(state->phong_shader_ex.uniforms), &state->transient_memory.allocator
+                                                                    );
+        
+        assert(state->phong_shader_ex.program_object);
+    }
+    
     return state;
 }
 
@@ -314,6 +393,9 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     vec3f area_size = top_right_corner - bottem_left_corner;
     
+    if (was_pressed(input->keys[VK_F2]))
+        state->pause_game = !state->pause_game;
+    
     // update debug camera
     if (state->in_debug_mode) {
         if (was_pressed(input->mouse.right))
@@ -322,9 +404,9 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             vec2f mouse_delta =  input->mouse.window_position - state->last_mouse_window_position;
             state->last_mouse_window_position = input->mouse.window_position;
             
-            state->debug_camera_alpha -= mouse_delta.x * Camera_Mouse_Sensitivity;
+            state->debug_camera_alpha -= mouse_delta.x * Debug_Camera_Mouse_Sensitivity;
             
-            state->debug_camera_beta -= mouse_delta.y * Camera_Mouse_Sensitivity;
+            state->debug_camera_beta -= mouse_delta.y * Debug_Camera_Mouse_Sensitivity;
             state->debug_camera_beta = CLAMP(state->debug_camera_beta, PIf * -0.5f, PIf * 0.5f);
             
             debug_update_camera(state);
@@ -352,7 +434,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         direction = normalize_or_zero(direction);
         
-        state->debug_camera.to_world_transform.translation +=  transform_direction(state->debug_camera.to_world_transform, direction) * delta_seconds * Camera_Move_Speed;
+        state->debug_camera.to_world_transform.translation +=  transform_direction(state->debug_camera.to_world_transform, direction) * delta_seconds * Debug_Camera_Move_Speed;
         state->world_to_camera_transform =  make_inverse_unscaled_transform(state->debug_camera.to_world_transform);
         
         vec3f imc_view_direction = -state->debug_camera.to_world_transform.forward;
@@ -377,39 +459,52 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     }
     else {
         state->world_to_camera_transform =  make_inverse_unscaled_transform(state->camera.to_world_transform);
+    }
+    
+    f32 ship_scale = 1.0f;
+    
+    static f32 thruster_intensity = 0.0f;
+    
+    if (!state->pause_game) {
+        thruster_intensity = MAX(0.0f, thruster_intensity - delta_seconds);
         
         vec3f direction = {};
         
         f32 rotation = 0.0f;
         f32 accelaration = 0.0f;
         
-        f32 Max_Velocity = 300.0f;
-        f32 Acceleration_Per_Second = 50.0f;
-        f32 Min_Acceleraton = Acceleration_Per_Second * 0.1f;
+        f32 Max_Velocity = 58.0f;
+        f32 Acceleration = 25.0f;
+        f32 Min_Acceleraton = Acceleration * 0.1f;
         
-        if (input->keys['W'].is_active)
-            accelaration += Acceleration_Per_Second * delta_seconds;
-        
-        if (was_pressed(input->keys['W'])) {
-            accelaration = MAX(Min_Acceleraton, accelaration);
+        if (!state->in_debug_mode) {
+            if (input->keys['W'].is_active) {
+                accelaration += Acceleration * delta_seconds;
+                thruster_intensity = MAX(thruster_intensity, 0.5f);
+            }
+            
+            if (was_pressed(input->keys['W'])) {
+                thruster_intensity = 1.0f;
+                accelaration = MAX(Min_Acceleraton, accelaration);
+            }
+            
+            // rotate counter clockwise; mathematically positive
+            if (input->keys['A'].is_active)
+                rotation += 1.0f;
+            
+            // rotate clockwise; mathematically negative
+            if (input->keys['D'].is_active)
+                rotation -= 1.0f;
+            
+            state->ship.orientation += rotation * PIf * delta_seconds;
+            
+            vec3f accelaration_vector = state->ship.transform.forward * accelaration;
+            
+            state->ship.velocity += accelaration_vector;
+            f32 v2 = MIN(squared_length(state->ship.velocity), Max_Velocity * Max_Velocity);
+            
+            state->ship.velocity = normalize_or_zero(state->ship.velocity) * sqrt(v2);
         }
-        
-        // rotate counter clockwise; mathematically positive
-        if (input->keys['A'].is_active)
-            rotation += 1.0f;
-        
-        // rotate clockwise; mathematically negative
-        if (input->keys['D'].is_active)
-            rotation -= 1.0f;
-        
-        state->ship.orientation += rotation * PIf * delta_seconds;
-        
-        vec3f accelaration_vector = state->ship.transform.forward * accelaration;
-        
-        state->ship.velocity += accelaration_vector;
-        f32 v2 = MIN(squared_length(state->ship.velocity), Max_Velocity * Max_Velocity);
-        
-        state->ship.velocity = normalize_or_zero(state->ship.velocity) * sqrt(v2);
         
         state->ship.transform.translation += state->ship.velocity * delta_seconds;
         
@@ -427,32 +522,118 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             state->ship.transform.translation.z = dirty_mod(state->ship.transform.translation.z - bottem_left_corner.z, area_size.z) + bottem_left_corner.z;
         }
         
-        state->ship.transform = make_transform(make_quat(VEC3_Y_AXIS, state->ship.orientation), state->ship.transform.translation);
+        state->ship.transform = make_transform(make_quat(VEC3_Y_AXIS, state->ship.orientation), state->ship.transform.translation, vec3f{ ship_scale, ship_scale, ship_scale });
         
+#if 0        
         draw_line(imc, state->ship.transform.translation, state->ship.transform.translation + accelaration_vector, make_rgba32(1.0f, 0.0f, 0.0f));
         
         draw_line(imc, state->ship.transform.translation,  state->ship.transform.translation + state->ship.velocity, make_rgba32(1.0f, 1.0f, 0.0f));
         
         
         draw_line(imc, state->ship.transform.translation,  state->ship.transform.translation + state->ship.transform.forward, make_rgba32(0.0f, 0.0f, 1.0f));
+#endif
     }
     
-    glUseProgram(state->phong_shader.program_object);
-    glUniform3fv(state->phong_shader.u_light_world_position, 1, vec3f{ 0.0f, 2.0f, 0.0f });
+    glUseProgram(state->phong_shader_ex.program_object);
+    //glUniform1i(state->phong_shader_ex.u_diffuse_texture, 0);
+    
+    //bind_phong_shader(&state->phong_shader);
+    //set_light_position(&state->phong_shader, vec3f{ 0.0f, 2.0f, 0.0f });
+    
+    Application_State::Ship_Entity *ship = &state->ship;
+    
+    u32 ligth_index = 0;
+    if (thruster_intensity > 0.0f) {
+        glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, transform_point(ship->transform, vec3f{ 0.0f, 0.0f, -5.0f }));
+        glUniform4fv(state->phong_shader_ex.u_light_diffuse_colors  + ligth_index, 1, vec4f{ 5.0f, 5.0f, 0.0f, 1.0f } * thruster_intensity);
+        glUniform4fv(state->phong_shader_ex.u_light_specular_colors + ligth_index, 1, vec4f{ 5.0f, 0.0f, 0.0f, 1.0f } * thruster_intensity);
+        
+        ++ligth_index;
+    }
+    
+    glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, vec3f{ 0.0f, 3.0f, 0.0f });
+    glUniform4fv(state->phong_shader_ex.u_light_diffuse_colors  + ligth_index, 1, vec4f{ 5.0f, 5.0f, 5.0f, 1.0f });
+    glUniform4fv(state->phong_shader_ex.u_light_specular_colors + ligth_index, 1, vec4f{ 5.0f, 5.0f, 5.0f, 1.0f });
+    ++ligth_index;
+    
+    glUniform1ui(state->phong_shader_ex.u_light_count, ligth_index);
+    
+    glUniformMatrix4fv(state->phong_shader_ex.u_camera_to_clip_projection, 1, GL_FALSE, state->camera_to_clip_projection);
+    glUniformMatrix4x3fv(state->phong_shader_ex.u_world_to_camera_transform, 1, GL_FALSE, state->world_to_camera_transform);
+    glUniform3fv(state->phong_shader_ex.u_camera_world_position, 1, state->camera.to_world_transform.translation);
+    
     
     {
-        Render_Material *materials[] = { CAST_P(Render_Material, &state->ship_material) };
-        draw(&state->ship_mesh.batch, ARRAY_WITH_COUNT(materials));
+        f32 ship_radius = ship_scale * 2.2f;
+        
+        s32 min_x;
+        s32 max_x;
+        if (ship->transform.translation.x - ship_radius < area_size.x * -0.5f) {
+            min_x = 0;
+            max_x = min_x + 2;
+        }
+        else if (ship->transform.translation.x + ship_radius > area_size.x * 0.5f) {
+            min_x = -1;
+            max_x = min_x + 2;
+        }
+        else {
+            min_x = 0;
+            max_x = 1;
+        }
+        
+        s32 min_z;
+        s32 max_z;
+        if ((ship->transform.translation.z - ship_radius < area_size.z * -0.5f)) {
+            min_z = 0;
+            max_z = min_z + 2;
+        }
+        else if ((ship->transform.translation.z + ship_radius > area_size.z * 0.5f)) {
+            min_z = -1;
+            max_z = min_z + 2;
+        }
+        else {
+            min_z = 0;
+            max_z = 1;
+        }
+        
+        vec4f ship_color = vec4f{ 1.0f, 1.0f, 1.0f, 1.0f };
+        glUniform4fv(state->phong_shader_ex.u_ambient_color, 1, ship_color * 0.1f);
+        glUniform4fv(state->phong_shader_ex.u_diffuse_color, 1, ship_color);
+        //set_diffuse_texture(&state->phong_shader, state->ship_material.texture_object);
+        
+        for (s32 z = min_z; z < max_z; ++z) {
+            for (s32 x = min_x; x < max_x; ++x) {
+                mat4x3f transform = ship->transform;
+                
+                transform.translation.x += area_size.x * x;
+                transform.translation.z += area_size.z * z;
+                glUniformMatrix4x3fv(state->phong_shader_ex.u_object_to_world_transform, 1, GL_FALSE, transform);
+                //set_object_to_world_transform(&state->phong_shader, transform);
+                
+                draw(&state->ship_mesh.batch, 0);
+            }
+        }
     }
     
     {
-        Render_Material *materials[] = { CAST_P(Render_Material, &state->astroid_material) };
-        draw(&state->astroid_mesh.batch, ARRAY_WITH_COUNT(materials));
+        //set_diffuse_texture(&state->phong_shader, state->astroid_material.texture_object);
+        //set_object_to_world_transform(&state->phong_shader, state->astroid_transform);
+        
+        glUniform4fv(state->phong_shader_ex.u_diffuse_color, 1, vec4f{ 1.0f, 1.0f, 0.0f, 1.0f });
+        glUniformMatrix4x3fv(state->phong_shader_ex.u_object_to_world_transform, 1, GL_FALSE, state->astroid_transform);
+        
+        draw(&state->astroid_mesh.batch, 0);
     }
     
     {
-        Render_Material *materials[] = { CAST_P(Render_Material, &state->beam_material) };
-        draw(&state->beam_mesh.batch, ARRAY_WITH_COUNT(materials));
+        
+        glUniform4fv(state->phong_shader_ex.u_diffuse_color, 1, vec4f{ 1.0f, 0.5f, 1.0f, 1.0f });
+        glUniformMatrix4x3fv(state->phong_shader_ex.u_object_to_world_transform, 1, GL_FALSE, state->beam_transform);
+        
+        //set_diffuse_texture(&state->phong_shader, state->beam_material.texture_object);
+        //set_object_to_world_transform(&state->phong_shader, state->beam_transform);
+        
+        draw(&state->beam_mesh.batch, 0);
     }
     
     draw(imc);
