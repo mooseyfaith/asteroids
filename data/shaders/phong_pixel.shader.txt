@@ -99,8 +99,10 @@ void main() {
 
 		float attenuation = 1.0 / (1 + 0.25 * dot(light_distance, light_distance));
 
-		diffuse_color  += u_light_diffuse_colors[light_index]  * max(0.0, dot(normal, light_dir));	
-		specular_color += u_light_specular_colors[light_index] * pow(max(0.0, dot(camera_dir, r)), 15);// * (1.0 - step(diffuse, 0.0));
+		float intensity = max(0.0, dot(normal, light_dir));
+
+		diffuse_color  += u_light_diffuse_colors[light_index]  * intensity;	
+		specular_color += u_light_specular_colors[light_index] * pow(max(0.0, dot(camera_dir, r)), 15) * (1.0 - step(intensity, 0.0));
 	}
 #else
 	diffuse_color = vec4(1);
