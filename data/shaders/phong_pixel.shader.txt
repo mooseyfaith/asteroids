@@ -12,13 +12,13 @@ uniform mat4x3 u_bone_transforms[MAX_BONE_COUNT];
 in vec3 a_position;
 in vec3 a_normal;
 
-#if WITH_DIFFUSE_TEXTURE
+#if defined WITH_DIFFUSE_TEXTURE
 in vec2 a_uv;
 
 out vec2 uv;
 #endif
 
-#if defined(BONE_ANIMATION)
+#if defined BONE_ANIMATION
 in vec4 a_bone_indices; // somehow it doesn't like integer uvec4 -.-, why gl why?
 in vec4 a_bone_weights;
 #endif
@@ -44,7 +44,7 @@ void main() {
 	world_normal   = u_object_to_world_transform * vec4(a_normal, 0.0);
 #endif
 	
-#if WITH_DIFFUSE_TEXTURE
+#if defined WITH_DIFFUSE_TEXTURE
 	uv = a_uv;
 #endif
 

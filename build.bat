@@ -45,13 +45,19 @@ echo "compiling dll" > compile_dll_lock.tmp
 rem option /ignore:4099 disables linker warning, that .pdb files for freetype.lib do not exists (we only use release build)
 cl -Fe%dll_name% %options% "%cd%\..\code\main.cpp" %libs% /DWIN32 /DWIN32_EXPORT %include_dirs% /LD /link /INCREMENTAL:NO /ignore:4099 /PDB:"%dll_name%%date%-%t%.pdb"
 
-if errorlevel 1 exit /B
+if errorlevel 1 (
+	popd
+	exit /B
+)
 
 del compile_dll_lock.tmp
 
 cl -Fe"%exe_name%" %options% %include_dirs% %srcs% %libs% /link /INCREMENTAL:NO
 
-if errorlevel 1 exit /B
+if errorlevel 1 (
+	popd
+	exit /B
+)
 
 if not exist "%exe_name%.sln" (
 	echo creating visual studio debug solution
