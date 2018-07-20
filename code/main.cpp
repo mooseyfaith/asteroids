@@ -68,22 +68,28 @@ struct Application_State {
     struct {
         GLuint program_object;
         
+#define PHONG_UNIFORMS \
+        u_camera_to_clip_projection, \
+        u_world_to_camera_transform, \
+        u_object_to_world_transform, \
+        u_camera_world_position, \
+        u_bone_transforms, \
+        u_light_world_positions, \
+        u_light_diffuse_colors, \
+        u_light_specular_colors, \
+        u_light_count, \
+        u_ambient_color, \
+        u_diffuse_texture, \
+        u_diffuse_color, \
+        u_normal_map
+        
         union {
-            struct {
-                GLint u_camera_to_clip_projection;
-                GLint u_world_to_camera_transform;
-                GLint u_object_to_world_transform;
-                GLint u_camera_world_position;
-                GLint u_bone_transforms;
-                GLint u_light_world_positions;
-                GLint u_light_diffuse_colors;
-                GLint u_light_specular_colors;
-                GLint u_light_count;
-                GLint u_ambient_color;
-                GLint u_diffuse_texture;
-                GLint u_diffuse_color;
-            };
-            GLint uniforms[12];
+            struct { GLint PHONG_UNIFORMS; };
+            
+            // sadly we cannot automate this,
+            // but make_shader_program will catch a missmatch
+            // while parsing the uniform_names string
+            GLint uniforms[13];
         };
     } phong_shader_ex;
     
@@ -103,15 +109,12 @@ struct Application_State {
 };
 
 
-
 Pixel_Dimensions const Reference_Resolution = { 1280, 720 };
 
 f32 const Debug_Camera_Move_Speed = 20.0f;
 f32 const Debug_Camera_Mouse_Sensitivity = 2.0f * PIf / 2048.0f;
 vec3f const Debug_Camera_Axis_Alpha = VEC3_Y_AXIS;
 vec3f const Debug_Camera_Axis_Beta = VEC3_X_AXIS;
-
-
 
 void debug_update_camera(Application_State *state) {
     quatf rotation = make_quat(Debug_Camera_Axis_Alpha, state->debug_camera_alpha);
@@ -179,11 +182,15 @@ APP_INIT_DEC(application_init) {
             { Vertex_Color_Index,    "a_color" },
         };
         
+#if 0        
         const char *uniform_names[] = {
             "u_texture",
             "u_alpha_threshold",
         };
         assert(ARRAY_COUNT(uniform_names) == ARRAY_COUNT(state->ui_font_material.shader.uniforms));
+#endif
+        
+        string uniform_names = S("u_texture, u_alpha_threshold");
         
         GLuint shader_objects[2];
         shader_objects[0] = make_shader_object(GL_VERTEX_SHADER, &vertex_shader_source, 1, &state->persistent_memory.allocator);
@@ -263,34 +270,23 @@ APP_INIT_DEC(application_init) {
         
         Shader_Attribute_Info attributes[] = {
             { Vertex_Position_Index, "a_position" },
+            { Vertex_Normal_Index,   "a_normal" },
+            { Vertex_Tangent_Index,  "a_tangent" },
             { Vertex_UV_Index,       "a_uv" },
-            { Vertex_Color_Index,    "a_color" },
         };
         
-        // please make shure that the order is the same as
-        // in phong_shader_ex struct
-        const char *uniform_names[] = {
-            "u_camera_to_clip_projection",
-            "u_world_to_camera_transform",
-            "u_object_to_world_transform",
-            "u_camera_world_position",
-            "u_bone_transforms",
-            "u_light_world_positions",
-            "u_light_diffuse_colors",
-            "u_light_specular_colors",
-            "u_light_count",
-            "u_ambient_color",
-            "u_diffuse_texture",
-            "u_diffuse_color",
-        };
-        assert(ARRAY_COUNT(uniform_names) == ARRAY_COUNT(state->phong_shader_ex.uniforms));
+        string uniform_names = S(STRINGIFY(PHONG_UNIFORMS));
+        
+        //#define DEBUG_NORMALS
         
         string global_defines = S(
             "#version 150\n"
             "#define MAX_LIGHT_COUNT 10\n"
             "#define WITH_DIFFUSE_COLOR\n"
-            "#define WITH_DIFFUSE_TEXTURE\n"
-            //"#define DEBUG_NORMALS\n"
+            //"#define WITH_DIFFUSE_TEXTURE\n"
+            "#define WITH_NORMAL_MAP\n"
+            
+            //DEBUG_NORMALS
             
             );
         
@@ -545,13 +541,18 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     glDisable(GL_BLEND);
     
     glUniform1i(state->phong_shader_ex.u_diffuse_texture, 0);
+    glUniform1i(state->phong_shader_ex.u_normal_map, 1);
     
     glActiveTexture(GL_TEXTURE0 + 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    
+    glActiveTexture(GL_TEXTURE0 + 1);
     glBindTexture(GL_TEXTURE_2D, state->asteroid_normal_map.object);
     
     //bind_phong_shader(&state->phong_shader);
     //set_light_position(&state->phong_shader, vec3f{ 0.0f, 2.0f, 0.0f });
     
+#if !defined DEBUG_NORMALS    
     u32 ligth_index = 0;
     if (ship->thruster_intensity > 0.0f) {
         glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, transform_point(ship->entity->transform, vec3f{ 0.0f, 0.0f, -5.0f }));
@@ -568,6 +569,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     ++ligth_index;
     
     glUniform1ui(state->phong_shader_ex.u_light_count, ligth_index);
+#endif
     
     glUniformMatrix4fv(state->phong_shader_ex.u_camera_to_clip_projection, 1, GL_FALSE, state->camera_to_clip_projection);
     glUniformMatrix4x3fv(state->phong_shader_ex.u_world_to_camera_transform, 1, GL_FALSE, state->world_to_camera_transform);
