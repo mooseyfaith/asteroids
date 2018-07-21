@@ -104,6 +104,9 @@ struct Application_State {
     
     Entity *asteroid, *beam;
     
+    u8_array *debug_mesh_vertex_buffers;
+    u32 debug_mesh_vertex_count;
+    
     bool in_debug_mode;
     bool pause_game;
 };
@@ -237,12 +240,14 @@ APP_INIT_DEC(application_init) {
     
     
     bool debug_ok = tga_load_texture(&state->asteroid_normal_map, S("meshs/asteroid_normal_map.tga"), platform_api->read_file, &state->transient_memory.allocator);
+    
     assert(debug_ok);
     
     {
         state->asteroid = push_reserve(&state->entities);
+        
         string source = platform_api->read_text_file(S("meshs/asteroid_baked.glm"), &state->transient_memory.allocator);
-        state->asteroid_mesh = make_mesh(source, &state->persistent_memory.allocator);
+        state->asteroid_mesh = make_mesh(source, &state->persistent_memory.allocator, &state->debug_mesh_vertex_buffers, &state->debug_mesh_vertex_count);
         free(&state->transient_memory.allocator, source.data);
         
         state->asteroid->transform = make_transform(QUAT_IDENTITY, vec3f{ 4.0f, 0.0f, 0.0f }, make_vec3_scale(3.0f));
@@ -277,17 +282,13 @@ APP_INIT_DEC(application_init) {
         
         string uniform_names = S(STRINGIFY(PHONG_UNIFORMS));
         
-        //#define DEBUG_NORMALS
-        
         string global_defines = S(
             "#version 150\n"
             "#define MAX_LIGHT_COUNT 10\n"
             "#define WITH_DIFFUSE_COLOR\n"
             //"#define WITH_DIFFUSE_TEXTURE\n"
             "#define WITH_NORMAL_MAP\n"
-            
-            //DEBUG_NORMALS
-            
+            "#define TANGENT_TRANSFORM_PER_FRAGMENT\n"
             );
         
         string vertex_shader_sources[] = {
@@ -536,6 +537,75 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
 #endif
     }
     
+#if 0    
+    u32 position_stride;
+    u32 position_buffer_index;
+    u32 position_offset;
+    
+    u32 normal_buffer_index;
+    u32 normal_offset;
+    u32 normal_stride;
+    
+    u32 tangent_buffer_index;
+    u32 tangent_offset;
+    u32 tangent_stride;
+    
+    u32 found_count = 3;
+    for (u32 buffer_index = 0;
+         buffer_index < state->asteroid_mesh.vertex_buffer_count;
+         ++buffer_index)
+    {
+        u32 offset = 0;
+        
+        for (u32 attribute_index = 0;
+             attribute_index < state->asteroid_mesh.vertex_buffers[buffer_index].vertex_attribute_info_count;
+             ++attribute_index)
+        {
+            if (state->asteroid_mesh.vertex_buffers[buffer_index].vertex_attribute_infos[attribute_index].index == Vertex_Position_Index)
+            {
+                position_buffer_index = buffer_index;
+                position_offset = offset;
+                position_stride = state->asteroid_mesh.vertex_buffers[buffer_index].vertex_stride;
+                --found_count;
+            }
+            else if (state->asteroid_mesh.vertex_buffers[buffer_index].vertex_attribute_infos[attribute_index].index == Vertex_Normal_Index)
+            {
+                normal_buffer_index = buffer_index;
+                normal_offset = offset;
+                normal_stride = state->asteroid_mesh.vertex_buffers[buffer_index].vertex_stride;
+                --found_count;
+            }
+            else if (state->asteroid_mesh.vertex_buffers[buffer_index].vertex_attribute_infos[attribute_index].index == Vertex_Tangent_Index)
+            {
+                tangent_buffer_index = buffer_index;
+                tangent_offset = offset;
+                tangent_stride = state->asteroid_mesh.vertex_buffers[buffer_index].vertex_stride;
+                --found_count;
+            }
+            
+            if (!found_count)
+                break;
+            
+            offset += get_vertex_attribute_size(state->asteroid_mesh.vertex_buffers[buffer_index].vertex_attribute_infos + attribute_index);
+        }
+        
+        if (!found_count)
+            break;
+    }
+    
+    assert(!found_count);
+    
+    for (u32 i = 0; i < state->debug_mesh_vertex_count; ++i) {
+        vec3f normal = *CAST_P(vec3f, state->debug_mesh_vertex_buffers[normal_buffer_index] + normal_offset + i * normal_stride);
+        vec3f tangent = *CAST_P(vec3f, state->debug_mesh_vertex_buffers[tangent_buffer_index] + tangent_offset + i * tangent_stride);
+        vec3f position = *CAST_P(vec3f, state->debug_mesh_vertex_buffers[position_buffer_index] + position_offset + i * position_stride);
+        
+        position = transform_point(state->asteroid->transform, position);
+        
+        draw_line(imc, position, position + normal,  rgba32{ 0, 0, 255, 255 });
+        draw_line(imc, position, position + tangent, rgba32{ 255, 0, 255, 255 });
+    }
+#endif
     
     glUseProgram(state->phong_shader_ex.program_object);
     glDisable(GL_BLEND);
@@ -552,24 +622,25 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     //bind_phong_shader(&state->phong_shader);
     //set_light_position(&state->phong_shader, vec3f{ 0.0f, 2.0f, 0.0f });
     
-#if !defined DEBUG_NORMALS    
     u32 ligth_index = 0;
-    if (ship->thruster_intensity > 0.0f) {
-        glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, transform_point(ship->entity->transform, vec3f{ 0.0f, 0.0f, -5.0f }));
-        glUniform4fv(state->phong_shader_ex.u_light_diffuse_colors  + ligth_index, 1, make_vec4(vec3f{ 5.0f, 5.0f, 0.0f } * ship->thruster_intensity));
-        glUniform4fv(state->phong_shader_ex.u_light_specular_colors + ligth_index, 1, make_vec4(vec3f{ 5.0f, 0.0f, 0.0f } * ship->thruster_intensity));
+    
+    if (state->phong_shader_ex.u_light_world_positions != -1) {
+        if (ship->thruster_intensity > 0.0f) {
+            glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, transform_point(ship->entity->transform, vec3f{ 0.0f, 0.0f, -5.0f }));
+            glUniform4fv(state->phong_shader_ex.u_light_diffuse_colors  + ligth_index, 1, make_vec4(vec3f{ 5.0f, 5.0f, 0.0f } * ship->thruster_intensity));
+            glUniform4fv(state->phong_shader_ex.u_light_specular_colors + ligth_index, 1, make_vec4(vec3f{ 5.0f, 0.0f, 0.0f } * ship->thruster_intensity));
+            
+            ++ligth_index;
+        }
         
+        // main light
+        glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, camera_world_position);
+        glUniform4fv(state->phong_shader_ex.u_light_diffuse_colors  + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
+        glUniform4fv(state->phong_shader_ex.u_light_specular_colors + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
         ++ligth_index;
     }
     
-    // main light
-    glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, vec3f{ 0.0f, 3.0f, 0.0f });
-    glUniform4fv(state->phong_shader_ex.u_light_diffuse_colors  + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
-    glUniform4fv(state->phong_shader_ex.u_light_specular_colors + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
-    ++ligth_index;
-    
     glUniform1ui(state->phong_shader_ex.u_light_count, ligth_index);
-#endif
     
     glUniformMatrix4fv(state->phong_shader_ex.u_camera_to_clip_projection, 1, GL_FALSE, state->camera_to_clip_projection);
     glUniformMatrix4x3fv(state->phong_shader_ex.u_world_to_camera_transform, 1, GL_FALSE, state->world_to_camera_transform);
