@@ -91,7 +91,7 @@ struct Application_State {
             // while parsing the uniform_names string
             GLint uniforms[13];
         };
-    } phong_shader_ex;
+    } phong_shader;
     
     Texture asteroid_normal_map;
     
@@ -144,6 +144,66 @@ void bind_ui_font_material(any new_material_pointer, any old_material_pointer) {
     glBindTexture(GL_TEXTURE_2D, new_material->texture->object);
 }
 
+void load_phong_shader(Application_State *state, Platform_API *platform_api)
+{
+    string shader_source = platform_api->read_text_file(S("shaders/phong.shader.txt"), &state->transient_memory.allocator);
+    assert(shader_source.count);
+    
+    defer { free(&state->transient_memory.allocator, shader_source.data); };
+    
+    Shader_Attribute_Info attributes[] = {
+        { Vertex_Position_Index, "a_position" },
+        { Vertex_Normal_Index,   "a_normal" },
+        { Vertex_Tangent_Index,  "a_tangent" },
+        { Vertex_UV_Index,       "a_uv" },
+    };
+    
+    string uniform_names = S(STRINGIFY(PHONG_UNIFORMS));
+    
+    string global_defines = S(
+        "#version 150\n"
+        "#define MAX_LIGHT_COUNT 10\n"
+        //"#define WITH_DIFFUSE_COLOR\n"
+        //"#define WITH_DIFFUSE_TEXTURE\n"
+        "#define WITH_NORMAL_MAP\n"
+        //"#define TANGENT_TRANSFORM_PER_FRAGMENT\n"
+        );
+    
+    string vertex_shader_sources[] = {
+        global_defines,
+        S("#define VERTEX_SHADER\n"),
+        shader_source,
+    };
+    
+    string fragment_shader_sources[] = {
+        global_defines,
+        S("#define FRAGMENT_SHADER\n"),
+        shader_source,
+    };
+    
+    GLuint shader_objects[2];
+    shader_objects[0] = make_shader_object(GL_VERTEX_SHADER, ARRAY_WITH_COUNT(vertex_shader_sources), &state->transient_memory.allocator);
+    shader_objects[1] = make_shader_object(GL_FRAGMENT_SHADER, ARRAY_WITH_COUNT(fragment_shader_sources), &state->transient_memory.allocator);
+    
+    GLint uniforms[ARRAY_COUNT(state->phong_shader.uniforms)];
+    
+    GLuint program_object = make_shader_program(ARRAY_WITH_COUNT(shader_objects), true, ARRAY_WITH_COUNT(attributes), uniform_names, ARRAY_WITH_COUNT(uniforms), &state->transient_memory.allocator
+                                                );
+    
+    if (program_object) {
+        if (state->phong_shader.program_object) {
+            glUseProgram(0);
+            glDeleteProgram(state->phong_shader.program_object);
+        }
+        
+        state->phong_shader.program_object = program_object;
+        COPY(state->phong_shader.uniforms, uniforms, sizeof(uniforms));
+        
+        for (u32 i = 0; i < ARRAY_COUNT(uniforms); ++i)
+            printf("uniform %d: %i\n", i, uniforms[i]);
+    }
+}
+
 APP_INIT_DEC(application_init) {
     auto persistent_memory = make_growing_stack_allocator(&platform_api->allocator);
     auto *state = ALLOCATE(&persistent_memory.allocator, Application_State);
@@ -185,14 +245,6 @@ APP_INIT_DEC(application_init) {
             { Vertex_Color_Index,    "a_color" },
         };
         
-#if 0        
-        const char *uniform_names[] = {
-            "u_texture",
-            "u_alpha_threshold",
-        };
-        assert(ARRAY_COUNT(uniform_names) == ARRAY_COUNT(state->ui_font_material.shader.uniforms));
-#endif
-        
         string uniform_names = S("u_texture, u_alpha_threshold");
         
         GLuint shader_objects[2];
@@ -217,6 +269,8 @@ APP_INIT_DEC(application_init) {
         
         state->ui_font_material.shader.program_object = program_object;
     }
+    
+    load_phong_shader(state, platform_api);
     
     state->font_lib = make_font_library();
     state->font = make_font(state->font_lib, S("C:/Windows/Fonts/arial.ttf"), 32, ' ', 128, platform_api->read_file, &state->persistent_memory.allocator);
@@ -267,52 +321,6 @@ APP_INIT_DEC(application_init) {
     state->camera.to_world_transform = make_transform(make_quat(VEC3_X_AXIS, PIf * -0.5f), vec3f{ 0.0f, 80.0f, 0.0f });
     state->main_window_area = { -1, -1, 800, 450 };
     
-    {
-        string shader_source = platform_api->read_text_file(S("shaders/phong_pixel.shader.txt"), &state->transient_memory.allocator);
-        assert(shader_source.count);
-        
-        defer { free(&state->transient_memory.allocator, shader_source.data); };
-        
-        Shader_Attribute_Info attributes[] = {
-            { Vertex_Position_Index, "a_position" },
-            { Vertex_Normal_Index,   "a_normal" },
-            { Vertex_Tangent_Index,  "a_tangent" },
-            { Vertex_UV_Index,       "a_uv" },
-        };
-        
-        string uniform_names = S(STRINGIFY(PHONG_UNIFORMS));
-        
-        string global_defines = S(
-            "#version 150\n"
-            "#define MAX_LIGHT_COUNT 10\n"
-            "#define WITH_DIFFUSE_COLOR\n"
-            //"#define WITH_DIFFUSE_TEXTURE\n"
-            "#define WITH_NORMAL_MAP\n"
-            "#define TANGENT_TRANSFORM_PER_FRAGMENT\n"
-            );
-        
-        string vertex_shader_sources[] = {
-            global_defines,
-            S("#define VERTEX_SHADER\n"),
-            shader_source,
-        };
-        
-        string fragment_shader_sources[] = {
-            global_defines,
-            S("#define FRAGMENT_SHADER\n"),
-            shader_source,
-        };
-        
-        GLuint shader_objects[2];
-        shader_objects[0] = make_shader_object(GL_VERTEX_SHADER, ARRAY_WITH_COUNT(vertex_shader_sources), &state->transient_memory.allocator);
-        shader_objects[1] = make_shader_object(GL_FRAGMENT_SHADER, ARRAY_WITH_COUNT(fragment_shader_sources), &state->transient_memory.allocator);
-        
-        state->phong_shader_ex.program_object = make_shader_program(ARRAY_WITH_COUNT(shader_objects), false, ARRAY_WITH_COUNT(attributes), uniform_names, ARRAY_WITH_COUNT(state->phong_shader_ex.uniforms), &state->transient_memory.allocator
-                                                                    );
-        
-        assert(state->phong_shader_ex.program_object);
-    }
-    
     return state;
 }
 
@@ -320,7 +328,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     Application_State *state = CAST_P(Application_State, app_data_ptr);
     auto imc = &state->immediate_render_context;
     auto ui = &state->ui_render_context;
-    // check if .dll was reloaded
     {
 #if 0
         global_debug_draw_info.immediate_render_context = &state->imc;
@@ -331,11 +338,17 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         DEBUG_DRAW_SET_TO_WORLD_MATRIX(idenity);
 #endif
         
-        if (!glUseProgram)
+        // check if .dll was reloaded
+        if (!glUseProgram) {
             init_gl();
-        
-        // make shure pointers for dynamic dispatch are valid
-        state->ui_font_material.base.bind_material = bind_ui_font_material;
+            
+            state->transient_memory = make_allocator(state->transient_memory.memory_growing_stack);
+            
+            load_phong_shader(state, platform_api);
+            
+            // make shure pointers for dynamic dispatch are valid
+            state->ui_font_material.base.bind_material = bind_ui_font_material;
+        }
     }
     
     // alt + F4 close application
@@ -362,7 +375,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     if (render_resolution.width == 0 || render_resolution.height == 0)
         return;
     
-    clear(&state->transient_memory.memory_growing_stack);
+    //clear(&state->transient_memory.memory_growing_stack);
     
     vec4f background_color = vec4f{ 0.1f, 0.1f, 0.3f, 1.0f };
     set_auto_viewport(state->main_window_area.size, render_resolution, vec4f{ 0.05f, 0.05f, 0.05f, 1.0f }, background_color);
@@ -607,44 +620,54 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     }
 #endif
     
-    glUseProgram(state->phong_shader_ex.program_object);
+    glUseProgram(state->phong_shader.program_object);
     glDisable(GL_BLEND);
     
-    glUniform1i(state->phong_shader_ex.u_diffuse_texture, 0);
-    glUniform1i(state->phong_shader_ex.u_normal_map, 1);
+    u32 texture_index = 0;
     
-    glActiveTexture(GL_TEXTURE0 + 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    if (state->phong_shader.u_normal_map != -1) {
+        glUniform1i(state->phong_shader.u_normal_map, texture_index);
+        glActiveTexture(GL_TEXTURE0 + texture_index);
+        glBindTexture(GL_TEXTURE_2D, state->asteroid_normal_map.object);
+        
+        ++texture_index;
+    }
     
-    glActiveTexture(GL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, state->asteroid_normal_map.object);
+    if (state->phong_shader.u_diffuse_texture != -1) {
+        glUniform1i(state->phong_shader.u_diffuse_texture, texture_index);
+        glActiveTexture(GL_TEXTURE0 + texture_index);
+        glBindTexture(GL_TEXTURE_2D, state->asteroid_normal_map.object);
+        
+        ++texture_index;
+    }
+    
     
     //bind_phong_shader(&state->phong_shader);
     //set_light_position(&state->phong_shader, vec3f{ 0.0f, 2.0f, 0.0f });
     
     u32 ligth_index = 0;
     
-    if (state->phong_shader_ex.u_light_world_positions != -1) {
+    if (state->phong_shader.u_light_world_positions != -1) {
         if (ship->thruster_intensity > 0.0f) {
-            glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, transform_point(ship->entity->transform, vec3f{ 0.0f, 0.0f, -5.0f }));
-            glUniform4fv(state->phong_shader_ex.u_light_diffuse_colors  + ligth_index, 1, make_vec4(vec3f{ 5.0f, 5.0f, 0.0f } * ship->thruster_intensity));
-            glUniform4fv(state->phong_shader_ex.u_light_specular_colors + ligth_index, 1, make_vec4(vec3f{ 5.0f, 0.0f, 0.0f } * ship->thruster_intensity));
+            glUniform3fv(state->phong_shader.u_light_world_positions + ligth_index, 1, transform_point(ship->entity->transform, vec3f{ 0.0f, 0.0f, -5.0f }));
+            glUniform4fv(state->phong_shader.u_light_diffuse_colors  + ligth_index, 1, make_vec4(vec3f{ 5.0f, 5.0f, 0.0f } * ship->thruster_intensity));
+            glUniform4fv(state->phong_shader.u_light_specular_colors + ligth_index, 1, make_vec4(vec3f{ 5.0f, 0.0f, 0.0f } * ship->thruster_intensity));
             
             ++ligth_index;
         }
         
         // main light
-        glUniform3fv(state->phong_shader_ex.u_light_world_positions + ligth_index, 1, camera_world_position);
-        glUniform4fv(state->phong_shader_ex.u_light_diffuse_colors  + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
-        glUniform4fv(state->phong_shader_ex.u_light_specular_colors + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
+        glUniform3fv(state->phong_shader.u_light_world_positions + ligth_index, 1, camera_world_position);
+        glUniform4fv(state->phong_shader.u_light_diffuse_colors  + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
+        glUniform4fv(state->phong_shader.u_light_specular_colors + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
         ++ligth_index;
     }
     
-    glUniform1ui(state->phong_shader_ex.u_light_count, ligth_index);
+    glUniform1ui(state->phong_shader.u_light_count, ligth_index);
     
-    glUniformMatrix4fv(state->phong_shader_ex.u_camera_to_clip_projection, 1, GL_FALSE, state->camera_to_clip_projection);
-    glUniformMatrix4x3fv(state->phong_shader_ex.u_world_to_camera_transform, 1, GL_FALSE, state->world_to_camera_transform);
-    glUniform3fv(state->phong_shader_ex.u_camera_world_position, 1, camera_world_position);
+    glUniformMatrix4fv(state->phong_shader.u_camera_to_clip_projection, 1, GL_FALSE, state->camera_to_clip_projection);
+    glUniformMatrix4x3fv(state->phong_shader.u_world_to_camera_transform, 1, GL_FALSE, state->world_to_camera_transform);
+    glUniform3fv(state->phong_shader.u_camera_world_position, 1, camera_world_position);
     
     
     {
@@ -681,8 +704,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         }
         
         vec4f ship_color = vec4f{ 1.0f, 1.0f, 1.0f, 1.0f };
-        glUniform4fv(state->phong_shader_ex.u_ambient_color, 1, ship_color * 0.1f);
-        glUniform4fv(state->phong_shader_ex.u_diffuse_color, 1, ship_color);
+        glUniform4fv(state->phong_shader.u_ambient_color, 1, ship_color * 0.1f);
+        glUniform4fv(state->phong_shader.u_diffuse_color, 1, ship_color);
         //set_diffuse_texture(&state->phong_shader, state->ship_material.texture_object);
         
         for (s32 z = min_z; z < max_z; ++z) {
@@ -691,7 +714,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                 
                 transform.translation.x += area_size.x * x;
                 transform.translation.z += area_size.z * z;
-                glUniformMatrix4x3fv(state->phong_shader_ex.u_object_to_world_transform, 1, GL_FALSE, transform);
+                glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, transform);
                 //set_object_to_world_transform(&state->phong_shader, transform);
                 
                 draw(&state->ship_mesh.batch, 0);
@@ -703,16 +726,15 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         //set_diffuse_texture(&state->phong_shader, state->astroid_material.texture_object);
         //set_object_to_world_transform(&state->phong_shader, state->astroid_transform);
         
-        glUniform4fv(state->phong_shader_ex.u_diffuse_color, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
-        glUniformMatrix4x3fv(state->phong_shader_ex.u_object_to_world_transform, 1, GL_FALSE, state->asteroid->transform);
+        glUniform4fv(state->phong_shader.u_diffuse_color, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
+        glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, state->asteroid->transform);
         
         draw(&state->asteroid_mesh.batch, 0);
     }
     
     {
-        
-        glUniform4fv(state->phong_shader_ex.u_diffuse_color, 1, vec4f{ 1.0f, 0.5f, 1.0f, 1.0f });
-        glUniformMatrix4x3fv(state->phong_shader_ex.u_object_to_world_transform, 1, GL_FALSE, state->beam->transform);
+        glUniform4fv(state->phong_shader.u_diffuse_color, 1, vec4f{ 1.0f, 0.5f, 1.0f, 1.0f });
+        glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, state->beam->transform);
         
         //set_diffuse_texture(&state->phong_shader, state->beam_material.texture_object);
         //set_object_to_world_transform(&state->phong_shader, state->beam_transform);
