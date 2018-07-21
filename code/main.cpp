@@ -94,7 +94,7 @@ struct Application_State {
     } phong_shader;
     
     Texture asteroid_normal_map;
-    
+    Texture asteroid_ambient_occlusion_map;
     Entity_Buffer entities;
     
     struct Ship_Entity {
@@ -164,7 +164,7 @@ void load_phong_shader(Application_State *state, Platform_API *platform_api)
         "#version 150\n"
         "#define MAX_LIGHT_COUNT 10\n"
         //"#define WITH_DIFFUSE_COLOR\n"
-        //"#define WITH_DIFFUSE_TEXTURE\n"
+        "#define WITH_DIFFUSE_TEXTURE\n"
         "#define WITH_NORMAL_MAP\n"
         //"#define TANGENT_TRANSFORM_PER_FRAGMENT\n"
         );
@@ -294,6 +294,7 @@ APP_INIT_DEC(application_init) {
     
     
     bool debug_ok = tga_load_texture(&state->asteroid_normal_map, S("meshs/asteroid_normal_map.tga"), platform_api->read_file, &state->transient_memory.allocator);
+    debug_ok &= tga_load_texture(&state->asteroid_ambient_occlusion_map, S("meshs/asteroid_ambient_occlusion.tga"), platform_api->read_file, &state->transient_memory.allocator);
     
     assert(debug_ok);
     
@@ -636,7 +637,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     if (state->phong_shader.u_diffuse_texture != -1) {
         glUniform1i(state->phong_shader.u_diffuse_texture, texture_index);
         glActiveTexture(GL_TEXTURE0 + texture_index);
-        glBindTexture(GL_TEXTURE_2D, state->asteroid_normal_map.object);
+        glBindTexture(GL_TEXTURE_2D, state->asteroid_ambient_occlusion_map.object);
         
         ++texture_index;
     }
