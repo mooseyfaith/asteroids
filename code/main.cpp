@@ -164,7 +164,7 @@ void load_phong_shader(Application_State *state, Platform_API *platform_api)
         "#version 150\n"
         "#define MAX_LIGHT_COUNT 10\n"
         //"#define WITH_DIFFUSE_COLOR\n"
-        "#define WITH_DIFFUSE_TEXTURE\n"
+        //"#define WITH_DIFFUSE_TEXTURE\n"
         "#define WITH_NORMAL_MAP\n"
         //"#define TANGENT_TRANSFORM_PER_FRAGMENT\n"
         );
@@ -205,6 +205,10 @@ void load_phong_shader(Application_State *state, Platform_API *platform_api)
 }
 
 APP_INIT_DEC(application_init) {
+    init_memory_stack_allocators();
+    init_memory_growing_stack_allocators();
+    platform_api->sync_allocators(global_allocate_functions, global_reallocate_functions, global_free_functions);
+    
     auto persistent_memory = make_growing_stack_allocator(&platform_api->allocator);
     auto *state = ALLOCATE(&persistent_memory.allocator, Application_State);
     *state = {};
@@ -341,9 +345,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         // check if .dll was reloaded
         if (!glUseProgram) {
+            init_memory_stack_allocators();
+            init_memory_growing_stack_allocators();
+            platform_api->sync_allocators(global_allocate_functions, global_reallocate_functions, global_free_functions);
+            
             init_gl();
             
-            state->transient_memory = make_allocator(state->transient_memory.memory_growing_stack);
+            //state->transient_memory = make_allocator(state->transient_memory.memory_growing_stack);
             
             load_phong_shader(state, platform_api);
             
@@ -551,7 +559,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
 #endif
     }
     
-#if 0    
+#if 0
     u32 position_stride;
     u32 position_buffer_index;
     u32 position_offset;
