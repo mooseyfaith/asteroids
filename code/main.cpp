@@ -5,15 +5,58 @@
 #include <mesh.h>
 #include <tga.h>
 
+#include <stdlib.h>
+
+struct Ship_Entity;
+
 struct Entity {
-    mat4x3f transform;
+    mat4x3f to_world_transform;
     f32 orientation;
+    f32 scale;
+    
     vec3f velocity;
-    vec4 color;
+    vec3f angular_rotation_axis;
+    f32   angular_velocity;
+    f32 radius;
+    
+    vec4 diffuse_color;
+    vec4 specular_color;
+    bool is_asteroid;
+    bool is_light;
+    Mesh *mesh;
+    Ship_Entity *ship;
+    Entity *parent;
+};
+
+struct Ship_Entity {
+    Entity *entity;
+    f32 thruster_intensity;
+};
+
+struct Draw_Entity {
+    mat4x3f to_world_transform;
+    Mesh *mesh;
+    vec4f color;
+};
+
+struct Light_Entity {
+    vec3f world_position;
+    vec4f diffuse_color;
+    vec4f specular_color;
 };
 
 #define BUFFER_TEMPLATE_NAME Entity_Buffer
 #define BUFFER_TEMPLATE_DATA_TYPE Entity
+#define BUFFER_TEMPLATE_IS_BUFFER
+#include "buffer_template.h"
+
+#define BUFFER_TEMPLATE_NAME      Draw_Entity_Buffer
+#define BUFFER_TEMPLATE_DATA_TYPE Draw_Entity
+#define BUFFER_TEMPLATE_IS_BUFFER
+#include "buffer_template.h"
+
+#define BUFFER_TEMPLATE_NAME      Light_Entity_Buffer
+#define BUFFER_TEMPLATE_DATA_TYPE Light_Entity
 #define BUFFER_TEMPLATE_IS_BUFFER
 #include "buffer_template.h"
 
@@ -62,7 +105,6 @@ struct Application_State {
     
     vec2f last_mouse_window_position;
     
-    
     Mesh ship_mesh, asteroid_mesh, beam_mesh;
     
     struct {
@@ -97,12 +139,9 @@ struct Application_State {
     Texture asteroid_ambient_occlusion_map;
     Entity_Buffer entities;
     
-    struct Ship_Entity {
-        Entity *entity;
-        f32 thruster_intensity;
-    } ship;
-    
-    Entity *asteroid, *beam;
+    Ship_Entity ship;
+    Entity *ship_thrusters;
+    Entity *beam;
     
     u8_array *debug_mesh_vertex_buffers;
     u32 debug_mesh_vertex_count;
@@ -110,7 +149,6 @@ struct Application_State {
     bool in_debug_mode;
     bool pause_game;
 };
-
 
 Pixel_Dimensions const Reference_Resolution = { 1280, 720 };
 
@@ -163,7 +201,7 @@ void load_phong_shader(Application_State *state, Platform_API *platform_api)
     string global_defines = S(
         "#version 150\n"
         "#define MAX_LIGHT_COUNT 10\n"
-        //"#define WITH_DIFFUSE_COLOR\n"
+        "#define WITH_DIFFUSE_COLOR\n"
         //"#define WITH_DIFFUSE_TEXTURE\n"
         "#define WITH_NORMAL_MAP\n"
         //"#define TANGENT_TRANSFORM_PER_FRAGMENT\n"
@@ -202,6 +240,46 @@ void load_phong_shader(Application_State *state, Platform_API *platform_api)
         for (u32 i = 0; i < ARRAY_COUNT(uniforms); ++i)
             printf("uniform %d: %i\n", i, uniforms[i]);
     }
+}
+
+f32 random_f32(f32 min, f32 max) {
+    return (f32)rand() * (max - min) / RAND_MAX + min;
+}
+
+vec3f random_unit_vector(bool random_x = true, bool random_y = true, bool random_z = true) {
+    vec3f result;
+    
+    if (random_x)
+        result.x = random_f32(-1.0f, 1.0f);
+    else
+        result.x = 0.0f;
+    
+    if (random_y)
+        result.y = random_f32(-1.0f, 1.0f);
+    else
+        result.y = 0.0f;
+    
+    if (random_z)
+        result.z = random_f32(-1.0f, 1.0f);
+    else
+        result.z = 0.0f;
+    
+    return normalize_or_zero(result);
+}
+
+void spawn_asteroid(Application_State *state, vec3f position, vec3f velocity, f32 scale, vec4f color) {
+    Entity *asteroid = push(&state->entities, {});
+    asteroid->velocity = random_unit_vector(true, false, true) * random_f32(0.5f, 10.0f);
+    asteroid->diffuse_color = color;
+    asteroid->is_asteroid = true;
+    asteroid->mesh = &state->asteroid_mesh;
+    asteroid->scale = scale;
+    asteroid->radius = scale * 1.0f;
+    
+    asteroid->to_world_transform = MAT4X3_IDENTITY;
+    asteroid->to_world_transform.translation = position;
+    asteroid->angular_rotation_axis = random_unit_vector();
+    asteroid->angular_velocity = random_f32(0.0f, 2 * PIf);
 }
 
 APP_INIT_DEC(application_init) {
@@ -285,46 +363,66 @@ APP_INIT_DEC(application_init) {
     
     state->entities = ALLOCATE_ARRAY_INFO(&state->persistent_memory.allocator, Entity, 20);
     
+    // make ship
+    
     {
-        state->ship.entity = push_reserve(&state->entities);
+        state->ship.entity = push(&state->entities, {});
         
         string source = platform_api->read_text_file(S("meshs/astroids_ship.glm"), &state->transient_memory.allocator);
         state->ship_mesh = make_mesh(source, &state->persistent_memory.allocator);
         free(&state->transient_memory.allocator, source.data);
         
-        state->ship.entity->transform = MAT4X3_IDENTITY;
-        state->ship.entity->color = make_vec4_scale(1.0f);
+        state->ship.entity->ship = &state->ship;
+        state->ship.entity->diffuse_color = make_vec4_scale(1.0f);
+        state->ship.entity->mesh = &state->ship_mesh;
+        state->ship.entity->scale  = 1.0f;
+        state->ship.entity->radius = state->ship.entity->scale * 1.0f;
+        state->ship.entity->angular_rotation_axis = VEC3_Y_AXIS;
+        state->ship.entity->angular_velocity = 0;
+        // will be updated anyway
+        state->ship.entity->to_world_transform = MAT4X3_IDENTITY;
+        
+        // thrusters
+        state->ship_thrusters = push(&state->entities, {});
+        state->ship_thrusters->is_light = true;
+        state->ship_thrusters->parent = state->ship.entity;
+        // make the radius big to have nicer lighting at border switch
+        state->ship_thrusters->radius = 10.0f;
+        state->ship_thrusters->scale = 1.0f;
+        state->ship_thrusters->to_world_transform = MAT4X3_IDENTITY;
+        state->ship_thrusters->to_world_transform.translation = vec3f{0.0f, 0.0f, 1.5f};
     }
-    
     
     bool debug_ok = tga_load_texture(&state->asteroid_normal_map, S("meshs/asteroid_normal_map.tga"), platform_api->read_file, &state->transient_memory.allocator);
     debug_ok &= tga_load_texture(&state->asteroid_ambient_occlusion_map, S("meshs/asteroid_ambient_occlusion.tga"), platform_api->read_file, &state->transient_memory.allocator);
-    
     assert(debug_ok);
     
     {
-        state->asteroid = push_reserve(&state->entities);
-        
         string source = platform_api->read_text_file(S("meshs/asteroid_baked.glm"), &state->transient_memory.allocator);
         state->asteroid_mesh = make_mesh(source, &state->persistent_memory.allocator, &state->debug_mesh_vertex_buffers, &state->debug_mesh_vertex_count);
         free(&state->transient_memory.allocator, source.data);
-        
-        state->asteroid->transform = make_transform(QUAT_IDENTITY, vec3f{ 4.0f, 0.0f, 0.0f }, make_vec3_scale(3.0f));
-        state->asteroid->color = make_vec4_scale(1.0f);
     }
     
     {
-        state->beam = push_reserve(&state->entities);
+        state->beam = push(&state->entities, {});
         string source = platform_api->read_text_file(S("meshs/astroids_beam.glm"), &state->transient_memory.allocator);
         state->beam_mesh = make_mesh(source, &state->persistent_memory.allocator);
         free(&state->transient_memory.allocator, source.data);
         
-        state->beam->transform = make_transform(QUAT_IDENTITY, vec3f{ -4.0f, 0.0f, 0.0f });
-        state->beam->color = make_vec4_scale(1.0f);
+        state->beam->to_world_transform = make_transform(QUAT_IDENTITY, vec3f{ -4.0f, 0.0f, 0.0f });
+        state->beam->diffuse_color = make_vec4_scale(1.0f);
+        state->beam->mesh = &state->beam_mesh;
     }
     
     state->camera.to_world_transform = make_transform(make_quat(VEC3_X_AXIS, PIf * -0.5f), vec3f{ 0.0f, 80.0f, 0.0f });
     state->main_window_area = { -1, -1, 800, 450 };
+    
+    FILETIME system_time;
+    GetSystemTimeAsFileTime(&system_time);
+    srand(system_time.dwLowDateTime);
+    
+    for (u32 i = 0; i < 6; ++i)
+        spawn_asteroid(state, random_unit_vector(true, false, true) * random_f32(0.0f, 50.0f), vec3f{ 1.0f, 0.0f, 1.0f }, 3.0f, make_vec4(random_unit_vector() * 0.5f + vec3f{1.0f, 1.0f, 1.0f}));
     
     return state;
 }
@@ -419,6 +517,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         state->pause_game = !state->pause_game;
     
     vec3f camera_world_position;
+    vec3f imc_view_direction = {};
     
     // update debug camera
     if (state->in_debug_mode) {
@@ -462,7 +561,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         state->world_to_camera_transform =  make_inverse_unscaled_transform(state->debug_camera.to_world_transform);
         camera_world_position = state->debug_camera.to_world_transform.translation;
         
-        vec3f imc_view_direction = -state->debug_camera.to_world_transform.forward;
+        imc_view_direction = -state->debug_camera.to_world_transform.forward;
         
         // draw game camera
         // note that the matrix.forward vector points to the opposite position of the camera view direction (the blue line)
@@ -485,10 +584,10 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     else {
         state->world_to_camera_transform =  make_inverse_unscaled_transform(state->camera.to_world_transform);
         camera_world_position = state->camera.to_world_transform.translation;
+        imc_view_direction = -state->camera.to_world_transform.forward;
     }
     
-    Application_State::Ship_Entity *ship = &state->ship;
-    f32 ship_scale = 1.0f;
+    Ship_Entity *ship = &state->ship;
     
     if (!state->pause_game) {
         ship->thruster_intensity = MAX(0.0f, ship->thruster_intensity - delta_seconds);
@@ -513,6 +612,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                 accelaration = MAX(Min_Acceleraton, accelaration);
             }
             
+            // turn thrusters on or off
+            state->ship_thrusters->is_light = (ship->thruster_intensity > 0);
+            if (state->ship_thrusters->is_light) {
+                state->ship_thrusters->diffuse_color = vec4f{1, 1, 0, 1} * ship->thruster_intensity;
+                state->ship_thrusters->specular_color = vec4f{1, 0, 0, 1} * ship->thruster_intensity;
+            }
+            
             // rotate counter clockwise; mathematically positive
             if (input->keys['A'].is_active)
                 rotation += 1.0f;
@@ -523,31 +629,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             
             ship->entity->orientation += rotation * PIf * delta_seconds;
             
-            vec3f accelaration_vector = ship->entity->transform.forward * accelaration;
+            vec3f accelaration_vector = ship->entity->to_world_transform.forward * accelaration;
             
             ship->entity->velocity += accelaration_vector;
             f32 v2 = MIN(squared_length(ship->entity->velocity), Max_Velocity * Max_Velocity);
             
             ship->entity->velocity = normalize_or_zero(ship->entity->velocity) * sqrt(v2);
         }
-        
-        ship->entity->transform.translation += ship->entity->velocity * delta_seconds;
-        
-        if (ship->entity->transform.translation.x - bottem_left_corner.x < 0.0f) {
-            ship->entity->transform.translation.x = area_size.x - dirty_mod(ship->entity->transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
-        }
-        else {
-            ship->entity->transform.translation.x = dirty_mod(ship->entity->transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
-        }
-        
-        if (ship->entity->transform.translation.z - bottem_left_corner.z < 0.0f) {
-            ship->entity->transform.translation.z = area_size.z - dirty_mod(ship->entity->transform.translation.z - bottem_left_corner.z, area_size.z) + bottem_left_corner.z;
-        }
-        else {
-            ship->entity->transform.translation.z = dirty_mod(ship->entity->transform.translation.z - bottem_left_corner.z, area_size.z) + bottem_left_corner.z;
-        }
-        
-        ship->entity->transform = make_transform(make_quat(VEC3_Y_AXIS, ship->entity->orientation), ship->entity->transform.translation, vec3f{ ship_scale, ship_scale, ship_scale });
         
 #if 0        
         draw_line(imc, state->ship.transform.translation, state->ship.transform.translation + accelaration_vector, make_rgba32(1.0f, 0.0f, 0.0f));
@@ -629,8 +717,134 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     }
 #endif
     
+    
+    //bind_phong_shader(&state->phong_shader);
+    //set_light_position(&state->phong_shader, vec3f{ 0.0f, 2.0f, 0.0f });
+    
+    
+    
+    Draw_Entity_Buffer draw_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Draw_Entity, state->entities.count * 4);
+    Light_Entity_Buffer light_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Light_Entity, 10);
+    
+    // update physics and add draw, light entities
+    
+    for (auto entity = first(&state->entities); entity != one_past_last(&state->entities); ++entity)
+    {
+        mat4x3f entity_to_world_transform;
+        
+        if (!entity->parent) {
+            if (!state->pause_game) {
+                entity->to_world_transform.translation += entity->velocity * delta_seconds;
+                entity->orientation += entity->angular_velocity * delta_seconds;
+            }
+            
+            entity_to_world_transform = entity->to_world_transform;
+        }
+        else {
+            // make shure parents are processed befor children
+            // child address in buffer is higher then parent address
+            assert(entity > entity->parent);
+            entity_to_world_transform = entity->to_world_transform * entity->parent->to_world_transform;
+        }
+        
+        if (entity_to_world_transform.translation.x - bottem_left_corner.x < 0.0f) {
+            entity_to_world_transform.translation.x = area_size.x - dirty_mod(entity_to_world_transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
+        }
+        else {
+            entity_to_world_transform.translation.x = dirty_mod(entity_to_world_transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
+        }
+        
+        if (entity_to_world_transform.translation.z - bottem_left_corner.z < 0.0f) {
+            entity_to_world_transform.translation.z = area_size.z - dirty_mod(entity_to_world_transform.translation.z - bottem_left_corner.z, area_size.z) + bottem_left_corner.z;
+        }
+        else {
+            entity_to_world_transform.translation.z = dirty_mod(entity_to_world_transform.translation.z - bottem_left_corner.z, area_size.z) + bottem_left_corner.z;
+        }
+        
+        entity_to_world_transform = make_transform(make_quat(entity->angular_rotation_axis, entity->orientation), entity_to_world_transform.translation, make_vec3_scale(entity->scale));
+        
+        s32 min_x;
+        s32 max_x;
+        if (entity_to_world_transform.translation.x - entity->radius < area_size.x * -0.5f) {
+            min_x = 0;
+            max_x = min_x + 2;
+        }
+        else if (entity_to_world_transform.translation.x + entity->radius > area_size.x * 0.5f) {
+            min_x = -1;
+            max_x = min_x + 2;
+        }
+        else {
+            min_x = 0;
+            max_x = 1;
+        }
+        
+        s32 min_z;
+        s32 max_z;
+        if ((entity_to_world_transform.translation.z - entity->radius < area_size.z * -0.5f)) {
+            min_z = 0;
+            max_z = min_z + 2;
+        }
+        else if ((entity_to_world_transform.translation.z + entity->radius > area_size.z * 0.5f)) {
+            min_z = -1;
+            max_z = min_z + 2;
+        }
+        else {
+            min_z = 0;
+            max_z = 1;
+        }
+        
+        // only update top entities
+        if (!entity->parent)
+            entity->to_world_transform = entity_to_world_transform;
+        
+        for (s32 z = min_z; z < max_z; ++z) {
+            for (s32 x = min_x; x < max_x; ++x) {
+                mat4x3f transform = entity_to_world_transform;
+                
+                transform.translation.x += area_size.x * x;
+                transform.translation.z += area_size.z * z;
+                
+                if (entity->mesh) {
+                    Draw_Entity draw_entity;
+                    draw_entity.to_world_transform = transform;
+                    draw_entity.mesh = entity->mesh;
+                    draw_entity.color = entity->diffuse_color;
+                    push(&draw_entities, draw_entity);
+                }
+                
+                if (entity->is_light) {
+                    Light_Entity light_entity;
+                    light_entity.world_position = transform.translation;
+                    
+                    f32 intensity = 1.0f;
+                    
+                    if (light_entity.world_position.x < area_size.x * -0.5f)
+                        intensity *= 1.0f - (area_size.x * -0.5f - light_entity.world_position.x) / entity->radius;
+                    else if (light_entity.world_position.x > area_size.x * 0.5f)
+                        intensity *= 1.0f - (light_entity.world_position.x - area_size.x * 0.5f) / entity->radius;
+                    
+                    if (light_entity.world_position.z < area_size.z * -0.5f)
+                        intensity *= 1.0f - (area_size.z * -0.5f - light_entity.world_position.z) / entity->radius;
+                    else if (light_entity.world_position.z > area_size.z * 0.5f)
+                        intensity *= 1.0f - (light_entity.world_position.z - area_size.z * 0.5f) / entity->radius;
+                    
+                    draw_circle(imc, light_entity.world_position, imc_view_direction, entity->radius, make_rgba32(entity->diffuse_color * intensity));
+                    
+                    light_entity.diffuse_color  = entity->diffuse_color  * intensity;
+                    light_entity.specular_color = entity->specular_color * intensity;
+                    push(&light_entities, light_entity);
+                }
+            }
+        }
+    }
+    
+    ui_printf(ui, 5, 30, S("light count: %"), f(light_entities.count));
+    
+    // rendering
+    
     glUseProgram(state->phong_shader.program_object);
     glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
     
     u32 texture_index = 0;
     
@@ -650,100 +864,51 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         ++texture_index;
     }
     
-    
-    //bind_phong_shader(&state->phong_shader);
-    //set_light_position(&state->phong_shader, vec3f{ 0.0f, 2.0f, 0.0f });
-    
-    u32 ligth_index = 0;
-    
-    if (state->phong_shader.u_light_world_positions != -1) {
-        if (ship->thruster_intensity > 0.0f) {
-            glUniform3fv(state->phong_shader.u_light_world_positions + ligth_index, 1, transform_point(ship->entity->transform, vec3f{ 0.0f, 0.0f, -5.0f }));
-            glUniform4fv(state->phong_shader.u_light_diffuse_colors  + ligth_index, 1, make_vec4(vec3f{ 5.0f, 5.0f, 0.0f } * ship->thruster_intensity));
-            glUniform4fv(state->phong_shader.u_light_specular_colors + ligth_index, 1, make_vec4(vec3f{ 5.0f, 0.0f, 0.0f } * ship->thruster_intensity));
-            
-            ++ligth_index;
-        }
-        
-        // main light
-        glUniform3fv(state->phong_shader.u_light_world_positions + ligth_index, 1, camera_world_position);
-        glUniform4fv(state->phong_shader.u_light_diffuse_colors  + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
-        glUniform4fv(state->phong_shader.u_light_specular_colors + ligth_index, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
-        ++ligth_index;
-    }
-    
-    glUniform1ui(state->phong_shader.u_light_count, ligth_index);
-    
+    // upload model view matrix
     glUniformMatrix4fv(state->phong_shader.u_camera_to_clip_projection, 1, GL_FALSE, state->camera_to_clip_projection);
     glUniformMatrix4x3fv(state->phong_shader.u_world_to_camera_transform, 1, GL_FALSE, state->world_to_camera_transform);
     glUniform3fv(state->phong_shader.u_camera_world_position, 1, camera_world_position);
     
+    // lights
     
+    Light_Entity main_light;
+    main_light.world_position = camera_world_position;
+    main_light.diffuse_color  = vec4f{1, 1, 1, 1};
+    main_light.specular_color = vec4f{1, 1, 1, 1};
+    push(&light_entities, main_light);
+    
+    if (state->phong_shader.u_light_world_positions != -1)
     {
-        f32 ship_radius = ship_scale * 2.2f;
+        u32 light_index = 0;
         
-        s32 min_x;
-        s32 max_x;
-        if (ship->entity->transform.translation.x - ship_radius < area_size.x * -0.5f) {
-            min_x = 0;
-            max_x = min_x + 2;
-        }
-        else if (ship->entity->transform.translation.x + ship_radius > area_size.x * 0.5f) {
-            min_x = -1;
-            max_x = min_x + 2;
-        }
-        else {
-            min_x = 0;
-            max_x = 1;
+        for (auto light_entity = first(&light_entities); light_entity != one_past_last(&light_entities); ++light_entity)
+        {
+            glUniform3fv(state->phong_shader.u_light_world_positions + light_index, 1, light_entity->world_position);
+            glUniform4fv(state->phong_shader.u_light_diffuse_colors  + light_index, 1, light_entity->diffuse_color);
+            glUniform4fv(state->phong_shader.u_light_specular_colors + light_index, 1, light_entity->specular_color);
+            
+            ++light_index;
         }
         
-        s32 min_z;
-        s32 max_z;
-        if ((ship->entity->transform.translation.z - ship_radius < area_size.z * -0.5f)) {
-            min_z = 0;
-            max_z = min_z + 2;
-        }
-        else if ((ship->entity->transform.translation.z + ship_radius > area_size.z * 0.5f)) {
-            min_z = -1;
-            max_z = min_z + 2;
-        }
-        else {
-            min_z = 0;
-            max_z = 1;
-        }
+        ui_printf(ui, 5, 60, S("uniform light count: %"), f(light_index));
         
-        vec4f ship_color = vec4f{ 1.0f, 1.0f, 1.0f, 1.0f };
-        glUniform4fv(state->phong_shader.u_ambient_color, 1, ship_color * 0.1f);
-        glUniform4fv(state->phong_shader.u_diffuse_color, 1, ship_color);
-        //set_diffuse_texture(&state->phong_shader, state->ship_material.texture_object);
-        
-        for (s32 z = min_z; z < max_z; ++z) {
-            for (s32 x = min_x; x < max_x; ++x) {
-                mat4x3f transform = ship->entity->transform;
-                
-                transform.translation.x += area_size.x * x;
-                transform.translation.z += area_size.z * z;
-                glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, transform);
-                //set_object_to_world_transform(&state->phong_shader, transform);
-                
-                draw(&state->ship_mesh.batch, 0);
-            }
-        }
+        glUniform1ui(state->phong_shader.u_light_count, light_index);
     }
     
+    // render queue draw entities
+    
+    for (auto draw_entity = first(&draw_entities); draw_entity != one_past_last(&draw_entities); ++draw_entity)
     {
-        //set_diffuse_texture(&state->phong_shader, state->astroid_material.texture_object);
-        //set_object_to_world_transform(&state->phong_shader, state->astroid_transform);
+        glUniform4fv(state->phong_shader.u_ambient_color, 1, draw_entity->color * 0.1f);
+        glUniform4fv(state->phong_shader.u_diffuse_color, 1, draw_entity->color);
+        glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, draw_entity->to_world_transform);
         
-        glUniform4fv(state->phong_shader.u_diffuse_color, 1, vec4f{ 1.0f, 1.0f, 1.0f, 1.0f });
-        glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, state->asteroid->transform);
-        
-        draw(&state->asteroid_mesh.batch, 0);
+        draw(&draw_entity->mesh->batch, 0);
     }
     
     {
         glUniform4fv(state->phong_shader.u_diffuse_color, 1, vec4f{ 1.0f, 0.5f, 1.0f, 1.0f });
-        glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, state->beam->transform);
+        glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, state->beam->to_world_transform);
         
         //set_diffuse_texture(&state->phong_shader, state->beam_material.texture_object);
         //set_object_to_world_transform(&state->phong_shader, state->beam_transform);
