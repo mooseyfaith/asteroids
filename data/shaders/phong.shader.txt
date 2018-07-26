@@ -167,7 +167,7 @@ void main() {
 		float intensity = max(0.0, dot(normal, light_dir));
 
 		diffuse_color  += u_light_diffuse_colors[light_index]  * intensity;	
-		specular_color += u_light_specular_colors[light_index] * pow(max(0.0, dot(camera_dir, r)), 15) * (1.0 - step(intensity, 0.0));
+		specular_color += u_light_specular_colors[light_index] * pow(max(0.0, dot(camera_dir, r)), 4) * (1.0 - step(intensity, 0.0));
 	}
 
 #else

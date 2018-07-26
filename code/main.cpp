@@ -896,7 +896,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     // lights
     
     Light_Entity main_light;
-    main_light.world_position = VEC3_Y_AXIS * 10; //  camera_world_position;
+    main_light.world_position = VEC3_Y_AXIS * 5; //  camera_world_position;
     main_light.diffuse_color  = vec4f{1, 1, 1, 1};
     main_light.specular_color = vec4f{1, 1, 1, 1};
     push(&light_entities, main_light);
