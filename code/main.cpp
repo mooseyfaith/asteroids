@@ -154,7 +154,7 @@ struct Application_State {
 
 Pixel_Dimensions const Reference_Resolution = { 1280, 720 };
 
-f32 const Debug_Camera_Move_Speed = 20.0f;
+f32 const Debug_Camera_Move_Speed = 100.0f;
 f32 const Debug_Camera_Mouse_Sensitivity = 2.0f * PIf / 2048.0f;
 vec3f const Debug_Camera_Axis_Alpha = VEC3_Y_AXIS;
 vec3f const Debug_Camera_Axis_Beta = VEC3_X_AXIS;
@@ -392,7 +392,7 @@ APP_INIT_DEC(application_init) {
         state->ship_thrusters->radius = 10.0f;
         state->ship_thrusters->scale = 1.0f;
         state->ship_thrusters->to_world_transform = MAT4X3_IDENTITY;
-        state->ship_thrusters->to_world_transform.translation = vec3f{0.0f, 0.0f, 1.5f};
+        state->ship_thrusters->to_world_transform.translation = vec3f{0.0f, 0.0f, -2.5f};
     }
     
     bool debug_ok = tga_load_texture(&state->asteroid_normal_map, S("meshs/asteroid_normal_map.tga"), platform_api->read_file, &state->transient_memory.allocator);
@@ -460,6 +460,30 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         }
     }
     
+    clear(&state->transient_memory.memory_growing_stack);
+    
+    // change game speed
+    static f32 game_speed = 1.0f;
+    static f32 backup_game_speed = 1.0f;
+    
+    if (was_pressed(input->keys[VK_F5])) {
+        game_speed = MAX(1.0f / 32.0f, game_speed * 0.5f);
+        backup_game_speed = 1.0f;
+    }
+    
+    if (was_pressed(input->keys[VK_F6])) {
+        game_speed = MIN(32, game_speed * 2.0f);
+        backup_game_speed = 1.0f;
+    }
+    
+    if (was_pressed(input->keys[VK_F7])) {
+        f32 temp = backup_game_speed;
+        backup_game_speed = game_speed;
+        game_speed = temp;
+    }
+    
+    delta_seconds *= game_speed;
+    
     // alt + F4 close application
     if (input->left_alt.is_active && was_pressed(input->keys[VK_F4]))
         PostQuitMessage(0);
@@ -523,6 +547,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     // update debug camera
     if (state->in_debug_mode) {
+        f32 debug_delta_seconds = delta_seconds / game_speed;
+        
         if (was_pressed(input->mouse.right))
             state->last_mouse_window_position = input->mouse.window_position;
         else if (input->mouse.right.is_active) {
@@ -559,7 +585,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         direction = normalize_or_zero(direction);
         
-        state->debug_camera.to_world_transform.translation +=  transform_direction(state->debug_camera.to_world_transform, direction) * delta_seconds * Debug_Camera_Move_Speed;
+        state->debug_camera.to_world_transform.translation +=  transform_direction(state->debug_camera.to_world_transform, direction) * debug_delta_seconds * Debug_Camera_Move_Speed;
         state->world_to_camera_transform =  make_inverse_unscaled_transform(state->debug_camera.to_world_transform);
         camera_world_position = state->debug_camera.to_world_transform.translation;
         
@@ -614,13 +640,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                 accelaration = MAX(Min_Acceleraton, accelaration);
             }
             
-            // turn thrusters on or off
-            state->ship_thrusters->is_light = (ship->thruster_intensity > 0);
-            if (state->ship_thrusters->is_light) {
-                state->ship_thrusters->diffuse_color = vec4f{1, 1, 0, 1} * ship->thruster_intensity;
-                state->ship_thrusters->specular_color = vec4f{1, 0, 0, 1} * ship->thruster_intensity;
-            }
-            
             // rotate counter clockwise; mathematically positive
             if (input->keys['A'].is_active)
                 rotation += 1.0f;
@@ -637,6 +656,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             f32 v2 = MIN(squared_length(ship->entity->velocity), Max_Velocity * Max_Velocity);
             
             ship->entity->velocity = normalize_or_zero(ship->entity->velocity) * sqrt(v2);
+        }
+        
+        // turn thrusters on or off
+        state->ship_thrusters->is_light = (ship->thruster_intensity > 0);
+        if (state->ship_thrusters->is_light) {
+            state->ship_thrusters->diffuse_color = vec4f{1, 1, 0, 1} * ship->thruster_intensity;
+            state->ship_thrusters->specular_color = vec4f{1, 0, 0, 1} * ship->thruster_intensity;
         }
         
 #if 0        
@@ -720,11 +746,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
 #endif
     
     
-    //bind_phong_shader(&state->phong_shader);
-    //set_light_position(&state->phong_shader, vec3f{ 0.0f, 2.0f, 0.0f });
-    
-    
-    
     Draw_Entity_Buffer draw_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Draw_Entity, state->entities.count * 4);
     Light_Entity_Buffer light_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Light_Entity, 10);
     
@@ -746,7 +767,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             // make shure parents are processed befor children
             // child address in buffer is higher then parent address
             assert(entity > entity->parent);
-            entity_to_world_transform = entity->to_world_transform * entity->parent->to_world_transform;
+            entity_to_world_transform = entity->parent->to_world_transform * entity->to_world_transform;
         }
         
         if (entity_to_world_transform.translation.x - bottem_left_corner.x < 0.0f) {
@@ -830,7 +851,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                     else if (light_entity.world_position.z > area_size.z * 0.5f)
                         intensity *= 1.0f - (light_entity.world_position.z - area_size.z * 0.5f) / entity->radius;
                     
-                    draw_circle(imc, light_entity.world_position, imc_view_direction, entity->radius, make_rgba32(entity->diffuse_color * intensity));
+                    if (state->in_debug_mode)
+                        draw_circle(imc, light_entity.world_position, imc_view_direction, entity->radius * intensity, make_rgba32(entity->diffuse_color * intensity));
                     
                     light_entity.diffuse_color  = entity->diffuse_color  * intensity;
                     light_entity.specular_color = entity->specular_color * intensity;
@@ -874,7 +896,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     // lights
     
     Light_Entity main_light;
-    main_light.world_position = camera_world_position;
+    main_light.world_position = VEC3_Y_AXIS * 10; //  camera_world_position;
     main_light.diffuse_color  = vec4f{1, 1, 1, 1};
     main_light.specular_color = vec4f{1, 1, 1, 1};
     push(&light_entities, main_light);
@@ -888,6 +910,11 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             glUniform3fv(state->phong_shader.u_light_world_positions + light_index, 1, light_entity->world_position);
             glUniform4fv(state->phong_shader.u_light_diffuse_colors  + light_index, 1, light_entity->diffuse_color);
             glUniform4fv(state->phong_shader.u_light_specular_colors + light_index, 1, light_entity->specular_color);
+            
+            if (state->in_debug_mode) {
+                draw_circle(imc, light_entity->world_position, imc_view_direction, squared_length(light_entity->diffuse_color), make_rgba32(light_entity->diffuse_color));
+                draw_circle(imc, light_entity->world_position, imc_view_direction, squared_length(light_entity->specular_color), make_rgba32(light_entity->specular_color));
+            }
             
             ++light_index;
         }
