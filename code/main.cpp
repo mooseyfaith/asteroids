@@ -45,20 +45,22 @@ struct Light_Entity {
     vec4f specular_color;
 };
 
-#define BUFFER_TEMPLATE_NAME Entity_Buffer
-#define BUFFER_TEMPLATE_DATA_TYPE Entity
-#define BUFFER_TEMPLATE_IS_BUFFER
-#include "buffer_template.h"
 
-#define BUFFER_TEMPLATE_NAME      Draw_Entity_Buffer
-#define BUFFER_TEMPLATE_DATA_TYPE Draw_Entity
-#define BUFFER_TEMPLATE_IS_BUFFER
-#include "buffer_template.h"
 
-#define BUFFER_TEMPLATE_NAME      Light_Entity_Buffer
-#define BUFFER_TEMPLATE_DATA_TYPE Light_Entity
-#define BUFFER_TEMPLATE_IS_BUFFER
-#include "buffer_template.h"
+#define Template_Array_Type Entity_Buffer
+#define Template_Array_Data_Type Entity
+#define Template_Array_Is_Buffer
+#include "array_template.h"
+
+#define Template_Array_Type      Draw_Entity_Buffer
+#define Template_Array_Data_Type Draw_Entity
+#define Template_Array_Is_Buffer
+#include "array_template.h"
+
+#define Template_Array_Type      Light_Entity_Buffer
+#define Template_Array_Data_Type Light_Entity
+#define Template_Array_Is_Buffer
+#include "array_template.h"
 
 struct Application_State {
     Memory_Growing_Stack_Allocator_Info persistent_memory;
@@ -728,7 +730,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     // update physics and add draw, light entities
     
-    for (auto entity = first(&state->entities); entity != one_past_last(&state->entities); ++entity)
+    for (auto entity = first(state->entities); entity != one_past_last(state->entities); ++entity)
     {
         mat4x3f entity_to_world_transform;
         
@@ -881,7 +883,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     {
         u32 light_index = 0;
         
-        for (auto light_entity = first(&light_entities); light_entity != one_past_last(&light_entities); ++light_entity)
+        for (auto light_entity = first(light_entities); light_entity != one_past_last(light_entities); ++light_entity)
         {
             glUniform3fv(state->phong_shader.u_light_world_positions + light_index, 1, light_entity->world_position);
             glUniform4fv(state->phong_shader.u_light_diffuse_colors  + light_index, 1, light_entity->diffuse_color);
@@ -897,7 +899,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     // render queue draw entities
     
-    for (auto draw_entity = first(&draw_entities); draw_entity != one_past_last(&draw_entities); ++draw_entity)
+    for (auto draw_entity = first(draw_entities); draw_entity != one_past_last(draw_entities); ++draw_entity)
     {
         glUniform4fv(state->phong_shader.u_ambient_color, 1, draw_entity->color * 0.1f);
         glUniform4fv(state->phong_shader.u_diffuse_color, 1, draw_entity->color);
