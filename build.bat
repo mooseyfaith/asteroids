@@ -2,6 +2,8 @@
 
 set exe_name=Astroids
 set dll_name=moose_astroids
+set application_init_function=application_init
+set application_main_loop_function=application_main_loop
 
 rem paths relative to build dir
 set moose_dir=%cd%\..\mooselib
@@ -11,15 +13,6 @@ set libs=kernel32.lib user32.lib gdi32.lib opengl32.lib
 set srcs="%moose_dir%\code\win32_platform.cpp"
 set options=/Zi /nologo /EHsc
 set link_options=/link /INCREMENTAL:NO
-
-if not exist data\ mkdir data
-
-if not exist data\app_config.txt (
-	echo creating data/app_config.txt
-	@echo application_name            %dll_name%.dll>> data\app_config.txt
-	@echo application_init_func       application_init>> data\app_config.txt
-	@echo application_main_loop_func  application_main_loop>> data\app_config.txt
-)
 
 if not exist build\ mkdir build
 pushd build
@@ -74,7 +67,7 @@ if errorlevel 1 (
 del compile_dll_lock.tmp
 
 if %live_code_editing%==0 (
-	cl -Fe"%exe_name%" %options% %include_dirs% %srcs% %libs% %link_options%
+	cl -Fe"%exe_name%" %options% /DWIN32_DLL_NAME=\"%dll_name%.dll\" /DWIN32_INIT_FUNCTION_NAME=\"%application_init_function%\" /DWIN32_MAIN_LOOP_FUNCTION_NAME=\"%application_main_loop_function%\" %include_dirs% %srcs% %libs% %link_options%
 
 	if errorlevel 1 (
 		popd

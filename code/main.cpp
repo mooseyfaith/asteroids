@@ -484,6 +484,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     delta_seconds *= game_speed;
     
+    
     // alt + F4 close application
     if (input->left_alt.is_active && was_pressed(input->keys[VK_F4]))
         PostQuitMessage(0);
@@ -492,26 +493,16 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     if (input->left_alt.is_active && was_pressed(input->keys[VK_RETURN]))
         state->main_window_is_fullscreen = !state->main_window_is_fullscreen;
     
-    // enable to keep Reference_Resolution aspect ratio and add black borders
-#if 0
-    if (!platform_api->window(platform_api, 0, S("Astroids"), &state->main_window_area, true, state->main_window_is_fullscreen, 0.0f))
-        PostQuitMessage(0);
-    
-    Pixel_Dimensions render_resolution = get_auto_render_resolution(state->main_window_area.size, Reference_Resolution);
-#else // forece window aspect ratio like Reference_Resolution
     if (!platform_api->window(platform_api, 0, S("Astroids"), &state->main_window_area, true, state->main_window_is_fullscreen, width_over_height(Reference_Resolution)))
         PostQuitMessage(0);
     
-    Pixel_Dimensions render_resolution = state->main_window_area.size;
-#endif
+    Pixel_Dimensions render_resolution = get_auto_render_resolution(state->main_window_area.size, Reference_Resolution);
     
     if (render_resolution.width == 0 || render_resolution.height == 0)
         return;
     
-    //clear(&state->transient_memory.memory_growing_stack);
-    
     vec4f background_color = vec4f{ 0.1f, 0.1f, 0.3f, 1.0f };
-    set_auto_viewport(state->main_window_area.size, render_resolution, vec4f{ 0.05f, 0.05f, 0.05f, 1.0f }, background_color);
+    set_auto_viewport(state->main_window_area.size, render_resolution, background_color);
     
     // enable to scale text relative to Reference_Resolution
 #if 0

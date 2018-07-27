@@ -1,3 +1,0 @@
-application_name            moose_astroids.dll
-application_init_func       application_init
-application_main_loop_func  application_main_loop
