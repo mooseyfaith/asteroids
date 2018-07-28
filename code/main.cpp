@@ -430,10 +430,55 @@ APP_INIT_DEC(application_init) {
     return state;
 }
 
+void output_sound(Sound_Buffer *sound_buffer, Immediate_Render_Context *imc) {
+    // tone a?
+    u32 hz = 480;
+    
+    s16 volume = 3000;
+    
+    u32 square_wave_period = sound_buffer->samples_per_second / hz;
+    
+    s16 *sample_it = cast_p(s16, sound_buffer->output.data);
+    u32 frame = sound_buffer->frame;
+    
+    u32 sample_count = sound_buffer->output.count / sound_buffer->bytes_per_sample;
+    assert(sound_buffer->channel_count == 2);
+    
+    f32 scale = 40;
+    f32 x = -20.0f;
+    
+    f32 pos   = scale * frame / sound_buffer->frame_count;
+    f32 width = scale * sound_buffer->output.count / (sound_buffer->bytes_per_sample * sound_buffer->frame_count);
+    
+    draw_line(imc, vec3f{x + pos, 0, -1}, vec3f{x + pos, 0, 2}, rgba32{255, 0, 0, 255});
+    
+    if (pos + width > scale) {
+        draw_rect(imc, vec3f{x + pos, 0, 0}, vec3f{scale - pos, 0, 0}, vec3f{0, 0, 1}, rgba32{255, 255, 0, 255});
+        width = pos + width - scale;
+        pos = 0;
+    }
+    
+    draw_rect(imc, vec3f{x + pos, 0, 0}, vec3f{width, 0, 0}, vec3f{0, 0, 1}, rgba32{255, 255, 0, 255});
+    
+    draw_rect(imc, vec3f{x, 0, 0}, vec3f{scale, 0, 0}, vec3f{0, 0, 1}, rgba32{0, 0, 255, 255});
+    
+    for (u32 i = 0; i < sample_count; ++i) {
+        s16 value = ((frame / (square_wave_period / 2)) % 2) ? volume : -volume;
+        
+        *(sample_it++) = value;
+        *(sample_it++) = value;
+        
+        ++frame;
+    }
+}
+
 APP_MAIN_LOOP_DEC(application_main_loop) {
     Application_State *state = CAST_P(Application_State, app_data_ptr);
     auto imc = &state->immediate_render_context;
     auto ui = &state->ui_render_context;
+    
+    output_sound(output_sound_buffer, imc);
+    
     {
 #if 0
         global_debug_draw_info.immediate_render_context = &state->imc;
@@ -496,6 +541,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     if (!platform_api->window(platform_api, 0, S("Astroids"), &state->main_window_area, true, state->main_window_is_fullscreen, width_over_height(Reference_Resolution)))
         PostQuitMessage(0);
+    
+    //state->main_window_area.x++;
     
     Pixel_Dimensions render_resolution = get_auto_render_resolution(state->main_window_area.size, Reference_Resolution);
     
