@@ -7,6 +7,9 @@
 
 #include <stdlib.h>
 
+#define Template_Geometry_Dimension_Count 3
+#include "geometry.h"
+
 struct Ship_Entity;
 
 struct Entity {
@@ -45,22 +48,20 @@ struct Light_Entity {
     vec4f specular_color;
 };
 
-
-
 #define Template_Array_Type Entity_Buffer
 #define Template_Array_Data_Type Entity
 #define Template_Array_Is_Buffer
-#include "array_template.h"
+#include "template_array.h"
 
 #define Template_Array_Type      Draw_Entity_Buffer
 #define Template_Array_Data_Type Draw_Entity
 #define Template_Array_Is_Buffer
-#include "array_template.h"
+#include "template_array.h"
 
 #define Template_Array_Type      Light_Entity_Buffer
 #define Template_Array_Data_Type Light_Entity
 #define Template_Array_Is_Buffer
-#include "array_template.h"
+#include "template_array.h"
 
 struct Application_State {
     Memory_Growing_Stack_Allocator_Info persistent_memory;
@@ -157,7 +158,7 @@ Pixel_Dimensions const Reference_Resolution = { 1280, 720 };
 f32 const Debug_Camera_Move_Speed = 100.0f;
 f32 const Debug_Camera_Mouse_Sensitivity = 2.0f * PIf / 2048.0f;
 vec3f const Debug_Camera_Axis_Alpha = VEC3_Y_AXIS;
-vec3f const Debug_Camera_Axis_Beta = VEC3_X_AXIS;
+vec3f const Debug_Camera_Axis_Beta  = VEC3_X_AXIS;
 
 void debug_update_camera(Application_State *state) {
     quatf rotation = make_quat(Debug_Camera_Axis_Alpha, state->debug_camera_alpha);
@@ -186,7 +187,7 @@ void bind_ui_font_material(any new_material_pointer, any old_material_pointer) {
 
 void load_phong_shader(Application_State *state, Platform_API *platform_api)
 {
-    string shader_source = platform_api->read_text_file(S("shaders/phong.shader.txt"), &state->transient_memory.allocator);
+    string shader_source = platform_api->read_file(S("shaders/phong.shader.txt"), &state->transient_memory.allocator);
     assert(shader_source.count);
     
     defer { free(&state->transient_memory.allocator, shader_source.data); };
@@ -311,13 +312,13 @@ APP_INIT_DEC(application_init) {
     {
         init_ui_render_context(&state->ui_render_context, KILO(10), 512, KILO(4), &state->persistent_memory.allocator);
         
-        string vertex_shader_source = platform_api->read_text_file(S("shaders/textured_unprojected.vert.txt"), &state->persistent_memory.allocator);
+        string vertex_shader_source = platform_api->read_file(S("shaders/textured_unprojected.vert.txt"), &state->persistent_memory.allocator);
         
         assert(vertex_shader_source.count);
         
         defer { free(&state->persistent_memory.allocator, vertex_shader_source.data); };
         
-        string fragment_shader_source = platform_api->read_text_file(S("shaders/textured.frag.txt"), &state->persistent_memory.allocator);
+        string fragment_shader_source = platform_api->read_file(S("shaders/textured.frag.txt"), &state->persistent_memory.allocator);
         
         assert(fragment_shader_source.count);
         
@@ -370,7 +371,7 @@ APP_INIT_DEC(application_init) {
     {
         state->ship.entity = push(&state->entities, {});
         
-        string source = platform_api->read_text_file(S("meshs/astroids_ship.glm"), &state->transient_memory.allocator);
+        string source = platform_api->read_file(S("meshs/astroids_ship.glm"), &state->transient_memory.allocator);
         state->ship_mesh = make_mesh(source, &state->persistent_memory.allocator);
         free(&state->transient_memory.allocator, source.data);
         
@@ -400,14 +401,14 @@ APP_INIT_DEC(application_init) {
     assert(debug_ok);
     
     {
-        string source = platform_api->read_text_file(S("meshs/asteroid_baked.glm"), &state->transient_memory.allocator);
+        string source = platform_api->read_file(S("meshs/asteroid_baked.glm"), &state->transient_memory.allocator);
         state->asteroid_mesh = make_mesh(source, &state->persistent_memory.allocator, &state->debug_mesh_vertex_buffers, &state->debug_mesh_vertex_count);
         free(&state->transient_memory.allocator, source.data);
     }
     
     {
         state->beam = push(&state->entities, {});
-        string source = platform_api->read_text_file(S("meshs/astroids_beam.glm"), &state->transient_memory.allocator);
+        string source = platform_api->read_file(S("meshs/astroids_beam.glm"), &state->transient_memory.allocator);
         state->beam_mesh = make_mesh(source, &state->persistent_memory.allocator);
         free(&state->transient_memory.allocator, source.data);
         
@@ -417,7 +418,7 @@ APP_INIT_DEC(application_init) {
     }
     
     state->camera.to_world_transform = make_transform(make_quat(VEC3_X_AXIS, PIf * -0.5f), vec3f{ 0.0f, 80.0f, 0.0f });
-    state->main_window_area = { -1, -1, 800, 450 };
+    state->main_window_area = { -1, -1, cast_v(s16, 400 * width_over_height(Reference_Resolution)), 400 };
     
     FILETIME system_time;
     GetSystemTimeAsFileTime(&system_time);
@@ -525,10 +526,36 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     mat4x3f world_to_camera_transform = make_inverse_unscaled_transform(state->camera.to_world_transform);
     f32 depth = get_clip_plane_z(state->camera_to_clip_projection, world_to_camera_transform, vec3f{});
     
-    vec3f bottem_left_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{ -1.0f, 1.0f, depth });
-    vec3f top_right_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{ 1.0f, -1.0f, depth });
+    vec3f bottem_left_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{-1.0f,  1.0f, depth});
+    vec3f top_right_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{ 1.0f, -1.0f, depth});
     
     vec3f area_size = top_right_corner - bottem_left_corner;
+    
+    Plane3f area_planes[4];
+    
+    draw_circle(imc, bottem_left_corner, VEC3_Y_AXIS, 2, rgba32{255, 0, 0, 255});
+    draw_circle(imc, top_right_corner, VEC3_Y_AXIS, 2, rgba32{0, 255, 0, 255});
+    
+    vec3f a = bottem_left_corner;
+    vec3f b = a;
+    b.z += area_size.z;
+    area_planes[0] = make_plane(cross(a - b, VEC3_Y_AXIS), a);
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[0].normal) * 5, rgba32{0, 0, 255, 255});
+    
+    a = b;
+    a.x += area_size.x;
+    area_planes[1] = make_plane(cross(b - a, VEC3_Y_AXIS), a);
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[1].normal) * 5, rgba32{0, 0, 255, 255});
+    
+    b = a;
+    b.z -= area_size.z;
+    area_planes[2] = make_plane(cross(a - b, VEC3_Y_AXIS), a);
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[2].normal) * 5, rgba32{0, 0, 255, 255});
+    
+    a = b;
+    a.x -= area_size.x;
+    area_planes[3] = make_plane(cross(b - a, VEC3_Y_AXIS), a);
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[3].normal) * 5, rgba32{0, 0, 255, 255});
     
     if (was_pressed(input->keys[VK_F2]))
         state->pause_game = !state->pause_game;
