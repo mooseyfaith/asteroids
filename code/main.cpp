@@ -150,6 +150,7 @@ struct Application_State {
     u32 debug_mesh_vertex_count;
     
     bool in_debug_mode;
+    bool debug_use_game_controls;
     bool pause_game;
 };
 
@@ -431,8 +432,10 @@ APP_INIT_DEC(application_init) {
 }
 
 void output_sound(Sound_Buffer *sound_buffer, Immediate_Render_Context *imc) {
+    return;
+    
     // tone a?
-    u32 hz = 480;
+    u32 hz = 300;
     
     s16 volume = 3000;
     
@@ -444,26 +447,36 @@ void output_sound(Sound_Buffer *sound_buffer, Immediate_Render_Context *imc) {
     u32 sample_count = sound_buffer->output.count / sound_buffer->bytes_per_sample;
     assert(sound_buffer->channel_count == 2);
     
-    f32 scale = 40;
-    f32 x = -20.0f;
+    f32 scale = 80;
+    f32 x = -40.0f;
+    
+    f32 thickness = 4;
     
     f32 pos   = scale * frame / sound_buffer->frame_count;
     f32 width = scale * sound_buffer->output.count / (sound_buffer->bytes_per_sample * sound_buffer->frame_count);
     
-    draw_line(imc, vec3f{x + pos, 0, -1}, vec3f{x + pos, 0, 2}, rgba32{255, 0, 0, 255});
+    draw_line(imc, vec3f{x + pos, 0, -thickness}, vec3f{x + pos, 0, thickness}, rgba32{255, 0, 255, 255});
+    
+    f32 play_pos = scale * sound_buffer->debug_play_frame / sound_buffer->frame_count;
+    draw_line(imc, vec3f{x + play_pos, 0, -thickness}, vec3f{x + play_pos, 0, thickness}, rgba32{255, 0, 0, 255});
+    
+    play_pos = scale * sound_buffer->debug_write_frame / sound_buffer->frame_count;
+    draw_line(imc, vec3f{x + play_pos, 0, -thickness}, vec3f{x + play_pos, 0, thickness}, rgba32{0, 255, 0, 255});
     
     if (pos + width > scale) {
-        draw_rect(imc, vec3f{x + pos, 0, 0}, vec3f{scale - pos, 0, 0}, vec3f{0, 0, 1}, rgba32{255, 255, 0, 255});
+        draw_rect(imc, vec3f{x + pos, 0, -thickness/2}, vec3f{scale - pos, 0, 0}, vec3f{0, 0, thickness}, rgba32{255, 255, 0, 255});
         width = pos + width - scale;
         pos = 0;
     }
     
-    draw_rect(imc, vec3f{x + pos, 0, 0}, vec3f{width, 0, 0}, vec3f{0, 0, 1}, rgba32{255, 255, 0, 255});
+    draw_rect(imc, vec3f{x + pos, 0, -thickness/2}, vec3f{width, 0, 0}, vec3f{0, 0, thickness}, rgba32{255, 255, 0, 255});
     
-    draw_rect(imc, vec3f{x, 0, 0}, vec3f{scale, 0, 0}, vec3f{0, 0, 1}, rgba32{0, 0, 255, 255});
+    draw_rect(imc, vec3f{x, 0, -thickness/2}, vec3f{scale, 0, 0}, vec3f{0, 0, thickness}, rgba32{0, 0, 255, 255});
     
     for (u32 i = 0; i < sample_count; ++i) {
         s16 value = ((frame / (square_wave_period / 2)) % 2) ? volume : -volume;
+        
+        //value = sin(2.0f * PIf * 250 * frame / sound_buffer->samples_per_second) * volume * 3;
         
         *(sample_it++) = value;
         *(sample_it++) = value;
@@ -612,46 +625,53 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     // update debug camera
     if (state->in_debug_mode) {
+        
+        if (was_pressed(input->keys[VK_F3]))
+            state->debug_use_game_controls = !state->debug_use_game_controls;
+        
         f32 debug_delta_seconds = delta_seconds / game_speed;
         
-        if (was_pressed(input->mouse.right))
-            state->last_mouse_window_position = input->mouse.window_position;
-        else if (input->mouse.right.is_active) {
-            vec2f mouse_delta =  input->mouse.window_position - state->last_mouse_window_position;
-            state->last_mouse_window_position = input->mouse.window_position;
+        if (!state->debug_use_game_controls) {
+            if (was_pressed(input->mouse.right))
+                state->last_mouse_window_position = input->mouse.window_position;
+            else if (input->mouse.right.is_active) {
+                vec2f mouse_delta =  input->mouse.window_position - state->last_mouse_window_position;
+                state->last_mouse_window_position = input->mouse.window_position;
+                
+                state->debug_camera_alpha -= mouse_delta.x * Debug_Camera_Mouse_Sensitivity;
+                
+                state->debug_camera_beta -= mouse_delta.y * Debug_Camera_Mouse_Sensitivity;
+                state->debug_camera_beta = CLAMP(state->debug_camera_beta, PIf * -0.5f, PIf * 0.5f);
+                
+                debug_update_camera(state);
+            }
             
-            state->debug_camera_alpha -= mouse_delta.x * Debug_Camera_Mouse_Sensitivity;
+            vec3f direction = {};
             
-            state->debug_camera_beta -= mouse_delta.y * Debug_Camera_Mouse_Sensitivity;
-            state->debug_camera_beta = CLAMP(state->debug_camera_beta, PIf * -0.5f, PIf * 0.5f);
+            if (input->keys['W'].is_active)
+                direction.z -= 1.0f;
             
-            debug_update_camera(state);
+            if (input->keys['S'].is_active)
+                direction.z += 1.0f;
+            
+            if (input->keys['A'].is_active)
+                direction.x -= 1.0f;
+            
+            if (input->keys['D'].is_active)
+                direction.x += 1.0f;
+            
+            if (input->keys['Q'].is_active)
+                direction.y -= 1.0f;
+            
+            if (input->keys['E'].is_active)
+                direction.y += 1.0f;
+            
+            direction = normalize_or_zero(direction);
+            
+            state->debug_camera.to_world_transform.translation +=  transform_direction(state->debug_camera.to_world_transform, direction) * debug_delta_seconds * Debug_Camera_Move_Speed;
         }
         
-        vec3f direction = {};
-        
-        if (input->keys['W'].is_active)
-            direction.z -= 1.0f;
-        
-        if (input->keys['S'].is_active)
-            direction.z += 1.0f;
-        
-        if (input->keys['A'].is_active)
-            direction.x -= 1.0f;
-        
-        if (input->keys['D'].is_active)
-            direction.x += 1.0f;
-        
-        if (input->keys['Q'].is_active)
-            direction.y -= 1.0f;
-        
-        if (input->keys['E'].is_active)
-            direction.y += 1.0f;
-        
-        direction = normalize_or_zero(direction);
-        
-        state->debug_camera.to_world_transform.translation +=  transform_direction(state->debug_camera.to_world_transform, direction) * debug_delta_seconds * Debug_Camera_Move_Speed;
-        state->world_to_camera_transform =  make_inverse_unscaled_transform(state->debug_camera.to_world_transform);
+        state->world_to_camera_transform = make_inverse_unscaled_transform(state->debug_camera.to_world_transform);
         camera_world_position = state->debug_camera.to_world_transform.translation;
         
         imc_view_direction = -state->debug_camera.to_world_transform.forward;
@@ -694,7 +714,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         f32 Acceleration = 25.0f;
         f32 Min_Acceleraton = Acceleration * 0.1f;
         
-        if (!state->in_debug_mode) {
+        if (!state->in_debug_mode || state->debug_use_game_controls) {
             if (input->keys['W'].is_active) {
                 accelaration += Acceleration * delta_seconds;
                 ship->thruster_intensity = MAX(ship->thruster_intensity, 0.5f);
@@ -851,6 +871,10 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         entity_to_world_transform = make_transform(make_quat(entity->angular_rotation_axis, entity->orientation), entity_to_world_transform.translation, make_vec3_scale(entity->scale));
         
+        // only update top entities
+        if (!entity->parent)
+            entity->to_world_transform = entity_to_world_transform;
+        
         s32 min_x;
         s32 max_x;
         if (entity_to_world_transform.translation.x - entity->radius < area_size.x * -0.5f) {
@@ -880,10 +904,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             min_z = 0;
             max_z = 1;
         }
-        
-        // only update top entities
-        if (!entity->parent)
-            entity->to_world_transform = entity_to_world_transform;
         
         for (s32 z = min_z; z < max_z; ++z) {
             for (s32 x = min_x; x < max_x; ++x) {
@@ -917,7 +937,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                         intensity *= 1.0f - (light_entity.world_position.z - area_size.z * 0.5f) / entity->radius;
                     
                     if (state->in_debug_mode)
-                        draw_circle(imc, light_entity.world_position, imc_view_direction, entity->radius * intensity, make_rgba32(entity->diffuse_color * intensity));
+                        draw_circle(imc, light_entity.world_position, imc_view_direction, entity->radius * intensity,  make_rgba32(x * 0.5f + 0.5f, 0, z * 0.5f + 0.5f)); // make_rgba32(entity->diffuse_color * intensity));
                     
                     light_entity.diffuse_color  = entity->diffuse_color  * intensity;
                     light_entity.specular_color = entity->specular_color * intensity;
