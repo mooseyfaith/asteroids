@@ -18,6 +18,7 @@ struct Entity {
     f32 scale;
     
     vec3f velocity;
+    vec3f next_velocity;
     vec3f angular_rotation_axis;
     f32   angular_velocity;
     f32 radius;
@@ -409,17 +410,6 @@ APP_INIT_DEC(application_init) {
         free(&state->transient_memory.allocator, source.data);
     }
     
-    {
-        state->beam = push(&state->entities, {});
-        string source = platform_api->read_file(S("meshs/astroids_beam.glm"), &state->transient_memory.allocator);
-        state->beam_mesh = make_mesh(source, &state->persistent_memory.allocator);
-        free(&state->transient_memory.allocator, source.data);
-        
-        state->beam->to_world_transform = make_transform(QUAT_IDENTITY, vec3f{ -4.0f, 0.0f, 0.0f });
-        state->beam->diffuse_color = make_vec4_scale(1.0f);
-        state->beam->mesh = &state->beam_mesh;
-    }
-    
     state->camera.to_world_transform = make_transform(make_quat(VEC3_X_AXIS, PIf * -0.5f), vec3f{ 0.0f, 80.0f, 0.0f });
     state->main_window_area = { -1, -1, cast_v(s16, 400 * width_over_height(Reference_Resolution)), 400 };
     
@@ -427,7 +417,7 @@ APP_INIT_DEC(application_init) {
     GetSystemTimeAsFileTime(&system_time);
     srand(system_time.dwLowDateTime);
     
-    for (u32 i = 0; i < 6; ++i)
+    for (u32 i = 0; i < 5; ++i)
         spawn_asteroid(state, random_unit_vector(true, false, true) * random_f32(0.0f, 50.0f), vec3f{ 1.0f, 0.0f, 1.0f }, 3.0f, make_vec4(random_unit_vector() * 0.5f + vec3f{1.0f, 1.0f, 1.0f}));
     
     return state;
@@ -713,6 +703,9 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     // draw game area
     draw_rect(imc, bottem_left_corner, vec3{ area_size.x, 0.0f, 0.0f }, vec3{ 0.0f, 0.0f, area_size.z }, make_rgba32(1.0f, 1.0f, 0.0f));
     
+    
+    // handle ship controls
+    
     Ship_Entity *ship = &state->ship;
     
     if (!state->pause_game) {
@@ -848,6 +841,68 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     Light_Entity_Buffer light_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Light_Entity, 10);
     
     // update physics and add draw, light entities
+    
+    f32 seconds = delta_seconds;
+    
+    while (seconds > 0.001f) 
+    {
+        f32 max_allowed_timestep = seconds;
+        
+        for (auto a = first(state->entities); a != one_past_last(state->entities); ++a)
+            a->next_velocity = a->velocity;
+        
+        for (auto a = first(state->entities); a != back(state->entities); ++a) {
+            if (a->parent)
+                continue;
+            
+            Sphere3f sphere_a = { a->to_world_transform.translation, a->radius };
+            
+            for (auto b = a + 1; b != one_past_last(state->entities); ++b) {
+                if (b->parent)
+                    continue;
+                
+                Sphere3f sphere_b = { b->to_world_transform.translation, b->radius };
+                
+                vec3f movement = (b->velocity - a->velocity) * max_allowed_timestep;
+                //draw_line(imc, sphere_b.center, sphere_b.center + movement, rgba32{255, 255, 0, 255});
+                
+                bool can_collide;
+                f32 max_allowed_movement = CLAMP(distance_until_collision(sphere_a, sphere_b, movement, &can_collide), 0, 1);
+                
+                if (max_allowed_movement == 0) {
+                    //|sphere_a.center - a->velocity * t - sphere_b.center + b->velocity * t|² = (sphere_b.radius + sphere_b.radius)²;
+                }
+                
+                if (max_allowed_timestep > max_allowed_movement * seconds) {
+                    max_allowed_timestep = max_allowed_movement * seconds;
+                    
+                    vec3f mirror_normal = normalize_or_zero(sphere_a.center - sphere_b.center);
+                    
+                    //draw_line(imc, sphere_a.center, sphere_b.center, rgba32{255 , 0, 0,255});
+                    
+                    //draw_line(imc, sphere_b.center, sphere_b.center + movement, rgba32{255, 255, 0, 255});
+                    
+                    a->next_velocity = mirror_normal * (2 * dot(mirror_normal, -a->velocity)) + a->velocity;
+                    b->next_velocity = -mirror_normal * (2 * dot(-mirror_normal, -b->velocity)) + b->velocity;
+                }
+            }
+        }
+        
+        for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
+            if (a->parent)
+                continue;
+            
+            draw_circle(imc, a->to_world_transform.translation + a->velocity * max_allowed_timestep, a->radius, rgba32{0, 255, 255, 255});
+            draw_line(imc, a->to_world_transform.translation, a->to_world_transform.translation + a->next_velocity, rgba32{255 , 0, 0,255});
+            
+            a->to_world_transform.translation += a->velocity * max_allowed_timestep;
+            a->velocity = a->next_velocity;
+        }
+        
+        draw_and_flush(imc);
+        
+        seconds -= max_allowed_timestep;
+    }
     
     for (auto entity = first(state->entities); entity != one_past_last(state->entities); ++entity)
     {
@@ -1039,17 +1094,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         draw(&draw_entity->mesh->batch, 0);
     }
     
-    {
-        glUniform4fv(state->phong_shader.u_diffuse_color, 1, vec4f{ 1.0f, 0.5f, 1.0f, 1.0f });
-        glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, state->beam->to_world_transform);
-        
-        //set_diffuse_texture(&state->phong_shader, state->beam_material.texture_object);
-        //set_object_to_world_transform(&state->phong_shader, state->beam_transform);
-        
-        draw(&state->beam_mesh.batch, 0);
-    }
-    
-    draw_and_flush(imc);
+    //draw_and_flush(imc);
     
     if (input->keys[VK_TAB].is_active) 
     {
@@ -1119,6 +1164,12 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         //Mif (state->in_debug_mode)
     }
     
+    
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
     draw_and_flush(imc);
+    
+    glEnable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
     draw(ui);
 }
