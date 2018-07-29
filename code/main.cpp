@@ -40,12 +40,14 @@ struct Draw_Entity {
     mat4x3f to_world_transform;
     Mesh *mesh;
     vec4f color;
+    f32 shininess;
 };
 
 struct Light_Entity {
     vec3f world_position;
     vec4f diffuse_color;
     vec4f specular_color;
+    f32   attenuation;
 };
 
 #define Template_Array_Type Entity_Buffer
@@ -113,28 +115,31 @@ struct Application_State {
     struct {
         GLuint program_object;
         
-#define PHONG_UNIFORMS \
-        u_camera_to_clip_projection, \
-        u_world_to_camera_transform, \
-        u_object_to_world_transform, \
-        u_camera_world_position, \
-        u_bone_transforms, \
-        u_light_world_positions, \
-        u_light_diffuse_colors, \
-        u_light_specular_colors, \
-        u_light_count, \
-        u_ambient_color, \
-        u_diffuse_texture, \
-        u_diffuse_color, \
-        u_normal_map
-        
         union {
+            
+#define PHONG_UNIFORMS \
+            u_camera_to_clip_projection, \
+            u_world_to_camera_transform, \
+            u_object_to_world_transform, \
+            u_camera_world_position, \
+            u_bone_transforms, \
+            u_shininess, \
+            u_light_world_positions, \
+            u_light_diffuse_colors, \
+            u_light_specular_colors, \
+            u_light_attenuations, \
+            u_light_count, \
+            u_ambient_color, \
+            u_diffuse_texture, \
+            u_diffuse_color, \
+            u_normal_map
+            
             struct { GLint PHONG_UNIFORMS; };
             
             // sadly we cannot automate this,
             // but make_shader_program will catch a missmatch
             // while parsing the uniform_names string
-            GLint uniforms[13];
+            GLint uniforms[15];
         };
     } phong_shader;
     
@@ -240,9 +245,6 @@ void load_phong_shader(Application_State *state, Platform_API *platform_api)
         
         state->phong_shader.program_object = program_object;
         COPY(state->phong_shader.uniforms, uniforms, sizeof(uniforms));
-        
-        for (u32 i = 0; i < ARRAY_COUNT(uniforms); ++i)
-            printf("uniform %d: %i\n", i, uniforms[i]);
     }
 }
 
@@ -308,7 +310,7 @@ APP_INIT_DEC(application_init) {
     state->camera_to_clip_projection = make_perspective_fov_projection(60.0f, width_over_height(Reference_Resolution));
     state->clip_to_camera_projection = make_inverse_perspective_projection(state->camera_to_clip_projection);
     
-    init_immediate_render_context(&state->immediate_render_context, &state->world_to_camera_transform, &state->camera_to_clip_projection, KILO(64), &state->persistent_memory.allocator);
+    init_immediate_render_context(&state->immediate_render_context, KILO(64), platform_api->read_file, &state->persistent_memory.allocator);
     
     {
         init_ui_render_context(&state->ui_render_context, KILO(10), 512, KILO(4), &state->persistent_memory.allocator);
@@ -435,7 +437,7 @@ void output_sound(Sound_Buffer *sound_buffer, Immediate_Render_Context *imc) {
     return;
     
     // tone a?
-    u32 hz = 300;
+    u32 hz = 440;
     
     s16 volume = 3000;
     
@@ -476,7 +478,7 @@ void output_sound(Sound_Buffer *sound_buffer, Immediate_Render_Context *imc) {
     for (u32 i = 0; i < sample_count; ++i) {
         s16 value = ((frame / (square_wave_period / 2)) % 2) ? volume : -volume;
         
-        //value = sin(2.0f * PIf * 250 * frame / sound_buffer->samples_per_second) * volume * 3;
+        value = sin(2.0f * PIf * hz * frame / sound_buffer->samples_per_second) * volume * 3;
         
         *(sample_it++) = value;
         *(sample_it++) = value;
@@ -503,15 +505,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
 #endif
         
         // check if .dll was reloaded
+        // TODO: application should notify this maybe a plain bool from the platform_api
         if (!glUseProgram) {
             init_memory_stack_allocators();
             init_memory_growing_stack_allocators();
             platform_api->sync_allocators(global_allocate_functions, global_reallocate_functions, global_free_functions);
             
             init_gl();
-            
-            //state->transient_memory = make_allocator(state->transient_memory.memory_growing_stack);
-            
             load_phong_shader(state, platform_api);
             
             // make shure pointers for dynamic dispatch are valid
@@ -543,10 +543,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     delta_seconds *= game_speed;
     
-    
     // alt + F4 close application
     if (input->left_alt.is_active && was_pressed(input->keys[VK_F4]))
         PostQuitMessage(0);
+    
+    // toggle game pause
+    if (was_pressed(input->keys[VK_F2]))
+        state->pause_game = !state->pause_game;
     
     // toggle fullscreen, this may freez the app for about 5 seconds
     if (input->left_alt.is_active && was_pressed(input->keys[VK_RETURN]))
@@ -566,7 +569,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     set_auto_viewport(state->main_window_area.size, render_resolution, background_color);
     
     // enable to scale text relative to Reference_Resolution
-#if 0
+#if 1
     ui_set_transform(ui, Reference_Resolution, 1.0f);
 #else
     ui_set_transform(ui, render_resolution, 1.0f);
@@ -579,53 +582,11 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     if (was_pressed(input->keys[VK_F1]))
         state->in_debug_mode = !state->in_debug_mode;
     
-    //
-    // calculate game area from camera projection
-    //
-    
-    mat4x3f world_to_camera_transform = make_inverse_unscaled_transform(state->camera.to_world_transform);
-    f32 depth = get_clip_plane_z(state->camera_to_clip_projection, world_to_camera_transform, vec3f{});
-    
-    vec3f bottem_left_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{-1.0f,  1.0f, depth});
-    vec3f top_right_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{ 1.0f, -1.0f, depth});
-    
-    vec3f area_size = top_right_corner - bottem_left_corner;
-    
-    Plane3f area_planes[4];
-    
-    draw_circle(imc, bottem_left_corner, VEC3_Y_AXIS, 2, rgba32{255, 0, 0, 255});
-    draw_circle(imc, top_right_corner, VEC3_Y_AXIS, 2, rgba32{0, 255, 0, 255});
-    
-    vec3f a = bottem_left_corner;
-    vec3f b = a;
-    b.z += area_size.z;
-    area_planes[0] = make_plane(cross(a - b, VEC3_Y_AXIS), a);
-    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[0].normal) * 5, rgba32{0, 0, 255, 255});
-    
-    a = b;
-    a.x += area_size.x;
-    area_planes[1] = make_plane(cross(b - a, VEC3_Y_AXIS), a);
-    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[1].normal) * 5, rgba32{0, 0, 255, 255});
-    
-    b = a;
-    b.z -= area_size.z;
-    area_planes[2] = make_plane(cross(a - b, VEC3_Y_AXIS), a);
-    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[2].normal) * 5, rgba32{0, 0, 255, 255});
-    
-    a = b;
-    a.x -= area_size.x;
-    area_planes[3] = make_plane(cross(b - a, VEC3_Y_AXIS), a);
-    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[3].normal) * 5, rgba32{0, 0, 255, 255});
-    
-    if (was_pressed(input->keys[VK_F2]))
-        state->pause_game = !state->pause_game;
-    
     vec3f camera_world_position;
     vec3f imc_view_direction = {};
     
     // update debug camera
     if (state->in_debug_mode) {
-        
         if (was_pressed(input->keys[VK_F3]))
             state->debug_use_game_controls = !state->debug_use_game_controls;
         
@@ -676,29 +637,81 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         imc_view_direction = -state->debug_camera.to_world_transform.forward;
         
+        imc->camera_to_clip_projection = state->camera_to_clip_projection;
+        imc->world_to_camera_transform = state->world_to_camera_transform;
+        
         // draw game camera
         // note that the matrix.forward vector points to the opposite position of the camera view direction (the blue line)
-        draw_circle(imc, state->camera.to_world_transform.translation, imc_view_direction, 1.0f, make_rgba32(0.0f, 1.0f, 1.0f));
+        draw_circle(imc, state->camera.to_world_transform.translation, 1.0f, make_rgba32(0.0f, 1.0f, 1.0f));
         draw_line(imc, state->camera.to_world_transform.translation, state->camera.to_world_transform.translation + state->camera.to_world_transform.right, make_rgba32(1.0f, 0.0f, 0.0f));
         draw_line(imc, state->camera.to_world_transform.translation, state->camera.to_world_transform.translation + state->camera.to_world_transform.up, make_rgba32(0.0f, 1.0f, 0.0f));
         draw_line(imc, state->camera.to_world_transform.translation, state->camera.to_world_transform.translation + state->camera.to_world_transform.forward, make_rgba32(0.0f, 0.0f, 1.0f));
         
-        // draw origin
-        draw_circle(imc, vec3f{}, VEC3_Y_AXIS, 1.0f, make_rgba32(1.0f, 0.0f, 1.0f));
-        draw_circle(imc, vec3f{}, imc_view_direction, 1.0f, make_rgba32(1.0f, 1.0f, 1.0f));
-        draw_line(imc, vec3f{}, VEC3_X_AXIS * 5, make_rgba32(1.0f, 0.0f, 0.0f));
-        draw_line(imc, vec3f{}, VEC3_Y_AXIS * 5, make_rgba32(0.0f, 1.0f, 0.0f));
-        draw_line(imc, vec3f{}, VEC3_Z_AXIS * 5, make_rgba32(0.0f, 0.0f, 1.0f));
+        // enable to scale with window size
+#if 0
+        f32 depth = get_clip_plane_z(state->camera_to_clip_projection, state->world_to_camera_transform, vec3f{});
+        f32 ui_scale = get_clip_to_world_up_scale(state->debug_camera.to_world_transform, state->clip_to_camera_projection, depth);
+        ui_scale *= 0.25f;
+#else
+        f32 ui_scale = 1.0f;
+#endif
         
-        // draw game area
-        draw_rect(imc, bottem_left_corner, vec3{ area_size.x, 0.0f, 0.0f }, vec3{ 0.0f, 0.0f, area_size.z }, make_rgba32(1.0f, 1.0f, 0.0f));
-        draw_rect(imc, vec3f{}, vec3{ 1.0f, 0.0f, 0.0f}, vec3{0.0f, 0.0f, 1.0f}, make_rgba32(1.0f, 1.0f, 0.0f));
+        // draw origin
+        draw_circle(imc, vec3f{}, ui_scale, VEC3_Y_AXIS, make_rgba32(1.0f, 0.0f, 1.0f));
+        draw_circle(imc, vec3f{}, ui_scale, make_rgba32(1.0f, 1.0f, 1.0f));
+        draw_line(imc, vec3f{}, VEC3_X_AXIS * ui_scale * 2, make_rgba32(1.0f, 0.0f, 0.0f));
+        draw_line(imc, vec3f{}, VEC3_Y_AXIS * ui_scale * 2, make_rgba32(0.0f, 1.0f, 0.0f));
+        draw_line(imc, vec3f{}, VEC3_Z_AXIS * ui_scale * 2, make_rgba32(0.0f, 0.0f, 1.0f));
+        
     }
     else {
         state->world_to_camera_transform =  make_inverse_unscaled_transform(state->camera.to_world_transform);
         camera_world_position = state->camera.to_world_transform.translation;
         imc_view_direction = -state->camera.to_world_transform.forward;
+        imc->camera_to_clip_projection = state->camera_to_clip_projection;
+        imc->world_to_camera_transform = state->world_to_camera_transform;
     }
+    
+    //
+    // calculate game area from camera projection
+    //
+    
+    mat4x3f world_to_camera_transform = make_inverse_unscaled_transform(state->camera.to_world_transform);
+    f32 depth = get_clip_plane_z(state->camera_to_clip_projection, world_to_camera_transform, vec3f{});
+    
+    vec3f bottem_left_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{-1.0f,  1.0f, depth});
+    vec3f top_right_corner = get_clip_to_world_point(state->camera.to_world_transform, state->clip_to_camera_projection, vec3f{ 1.0f, -1.0f, depth});
+    
+    vec3f area_size = top_right_corner - bottem_left_corner;
+    
+    Plane3f area_planes[4];
+    
+    draw_circle(imc, bottem_left_corner, 2, VEC3_Y_AXIS, rgba32{255, 0, 0, 255});
+    draw_circle(imc, top_right_corner, 2, VEC3_Y_AXIS, rgba32{0, 255, 0, 255});
+    
+    vec3f a = bottem_left_corner;
+    vec3f b = a;
+    b.z += area_size.z;
+    area_planes[0] = make_plane(cross(a - b, VEC3_Y_AXIS), a);
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[0].normal) * 5, rgba32{0, 0, 255, 255});
+    
+    a = b;
+    a.x += area_size.x;
+    area_planes[1] = make_plane(cross(b - a, VEC3_Y_AXIS), a);
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[1].normal) * 5, rgba32{0, 0, 255, 255});
+    
+    b = a;
+    b.z -= area_size.z;
+    area_planes[2] = make_plane(cross(a - b, VEC3_Y_AXIS), a);
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[2].normal) * 5, rgba32{0, 0, 255, 255});
+    
+    a = b;
+    a.x -= area_size.x;
+    area_planes[3] = make_plane(cross(b - a, VEC3_Y_AXIS), a);
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[3].normal) * 5, rgba32{0, 0, 255, 255});
+    
+    // draw game area
+    draw_rect(imc, bottem_left_corner, vec3{ area_size.x, 0.0f, 0.0f }, vec3{ 0.0f, 0.0f, area_size.z }, make_rgba32(1.0f, 1.0f, 0.0f));
     
     Ship_Entity *ship = &state->ship;
     
@@ -746,8 +759,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         // turn thrusters on or off
         state->ship_thrusters->is_light = (ship->thruster_intensity > 0);
         if (state->ship_thrusters->is_light) {
-            state->ship_thrusters->diffuse_color = vec4f{1, 1, 0, 1} * ship->thruster_intensity;
-            state->ship_thrusters->specular_color = vec4f{1, 0, 0, 1} * ship->thruster_intensity;
+            state->ship_thrusters->diffuse_color = vec4f{1, 1, 1, 1} * ship->thruster_intensity;
+            state->ship_thrusters->specular_color = vec4f{1, 1, 0, 1} * ship->thruster_intensity;
         }
         
 #if 0        
@@ -917,6 +930,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                     draw_entity.to_world_transform = transform;
                     draw_entity.mesh = entity->mesh;
                     draw_entity.color = entity->diffuse_color;
+                    draw_entity.shininess = 128.0f;
                     push(&draw_entities, draw_entity);
                 }
                 
@@ -937,10 +951,11 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                         intensity *= 1.0f - (light_entity.world_position.z - area_size.z * 0.5f) / entity->radius;
                     
                     if (state->in_debug_mode)
-                        draw_circle(imc, light_entity.world_position, imc_view_direction, entity->radius * intensity,  make_rgba32(x * 0.5f + 0.5f, 0, z * 0.5f + 0.5f)); // make_rgba32(entity->diffuse_color * intensity));
+                        draw_circle(imc, light_entity.world_position, entity->radius * intensity,  make_rgba32(x * 0.5f + 0.5f, 0, z * 0.5f + 0.5f)); // make_rgba32(entity->diffuse_color * intensity));
                     
                     light_entity.diffuse_color  = entity->diffuse_color  * intensity;
                     light_entity.specular_color = entity->specular_color * intensity;
+                    light_entity.attenuation    = 0.005f;
                     push(&light_entities, light_entity);
                 }
             }
@@ -982,8 +997,10 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     Light_Entity main_light;
     main_light.world_position = VEC3_Y_AXIS * 5; //  camera_world_position;
+    //main_light.world_position = camera_world_position;
     main_light.diffuse_color  = vec4f{1, 1, 1, 1};
     main_light.specular_color = vec4f{1, 1, 1, 1};
+    main_light.attenuation    = 0.005f;
     push(&light_entities, main_light);
     
     if (state->phong_shader.u_light_world_positions != -1)
@@ -995,10 +1012,11 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             glUniform3fv(state->phong_shader.u_light_world_positions + light_index, 1, light_entity->world_position);
             glUniform4fv(state->phong_shader.u_light_diffuse_colors  + light_index, 1, light_entity->diffuse_color);
             glUniform4fv(state->phong_shader.u_light_specular_colors + light_index, 1, light_entity->specular_color);
+            glUniform1f(state->phong_shader.u_light_attenuations + light_index, light_entity->attenuation);
             
             if (state->in_debug_mode) {
-                draw_circle(imc, light_entity->world_position, imc_view_direction, squared_length(light_entity->diffuse_color), make_rgba32(light_entity->diffuse_color));
-                draw_circle(imc, light_entity->world_position, imc_view_direction, squared_length(light_entity->specular_color), make_rgba32(light_entity->specular_color));
+                draw_circle(imc, light_entity->world_position, squared_length(light_entity->diffuse_color), make_rgba32(light_entity->diffuse_color));
+                draw_circle(imc, light_entity->world_position, squared_length(light_entity->specular_color), make_rgba32(light_entity->specular_color));
             }
             
             ++light_index;
@@ -1016,6 +1034,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         glUniform4fv(state->phong_shader.u_ambient_color, 1, draw_entity->color * 0.1f);
         glUniform4fv(state->phong_shader.u_diffuse_color, 1, draw_entity->color);
         glUniformMatrix4x3fv(state->phong_shader.u_object_to_world_transform, 1, GL_FALSE, draw_entity->to_world_transform);
+        glUniform1f(state->phong_shader.u_shininess, draw_entity->shininess);
         
         draw(&draw_entity->mesh->batch, 0);
     }
@@ -1030,6 +1049,76 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         draw(&state->beam_mesh.batch, 0);
     }
     
-    draw(imc);
+    draw_and_flush(imc);
+    
+    if (input->keys[VK_TAB].is_active) 
+    {
+        //SCOPE_PUSH(imc->world_to_camera_transform, ui->transform);
+        
+        ui_set_transform(ui, render_resolution, 1.0f);
+        imc->world_to_camera_transform = ui->transform;
+        imc->camera_to_clip_projection = MAT4_IDENTITY;
+        
+        f32 button_width  = 68;
+        f32 button_height = 42;
+        f32 space         = 10;
+        
+        bool f_button_available[12] = {};
+        bool f_button_active[12] = {};
+        
+        f_button_available[0] = true;
+        if (state->in_debug_mode) {
+            f_button_active[0] = true;
+            
+            f_button_available[2] = true;
+            if (state->debug_use_game_controls)
+                f_button_active[2] = true;
+        }
+        
+        f_button_available[1] = true;
+        if (state->pause_game)
+            f_button_active[1] = true;
+        
+        f_button_available[4] = true;
+        f_button_available[5] = true;
+        f_button_available[6] = true;
+        
+        if (game_speed < 1.0f)
+            f_button_active[4] = true;
+        else if (game_speed > 1.0f)
+            f_button_active[5] = true;
+        else
+            f_button_active[6] = true;
+        
+        //ui->font_rendering.scale = 1.0f;
+        ui->font_rendering.alignment.x = 0.0f;
+        ui->font_rendering.alignment.y = 0.0f;
+        
+        for (u32 i = 0; i < ARRAY_COUNT(f_button_available); ++i)
+        {
+            f32 x = 20 + (button_width + space) * i + i/4 * space * 2;
+            f32 y = ui->anchors.top - 20;
+            
+            rgba32 color;
+            if (f_button_available[i]) {
+                if (f_button_active[i])
+                    color = make_rgba32(0, 1, 0);
+                else
+                    color = make_rgba32(1, 0, 0);
+            }
+            else
+                color = make_rgba32(0.2f, 0.2f, 0.2f);
+            
+            draw_rect(imc, vec3f{ x, y, 0 }, vec3f{ button_width, 0, 0 }, vec3f{ 0, -button_height, 0 }, color);
+            
+            ui->font_rendering.color = color;
+            
+            ui_printf(ui, x + button_width/2, y - button_height/2, S("F%"), f(i + 1));
+        }
+        
+        //Mif (state->in_debug_mode)
+    }
+    
+    draw_and_flush(imc);
     draw(ui);
 }
