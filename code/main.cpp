@@ -16,12 +16,18 @@ struct Entity {
     mat4x3f to_world_transform;
     f32 orientation;
     f32 scale;
+    f32 radius;
     
     vec3f velocity;
-    vec3f next_velocity;
     vec3f angular_rotation_axis;
     f32   angular_velocity;
-    f32 radius;
+    
+    f32 min_time_to_act;
+    vec3f new_world_position;
+    vec3f new_velocity;
+    
+    vec3f next_world_position;
+    vec3f next_velocity;
     
     vec4 diffuse_color;
     vec4 specular_color;
@@ -417,8 +423,10 @@ APP_INIT_DEC(application_init) {
     GetSystemTimeAsFileTime(&system_time);
     srand(system_time.dwLowDateTime);
     
-    for (u32 i = 0; i < 5; ++i)
+    for (u32 i = 0; i < 1; ++i)
         spawn_asteroid(state, random_unit_vector(true, false, true) * random_f32(0.0f, 50.0f), vec3f{ 1.0f, 0.0f, 1.0f }, 3.0f, make_vec4(random_unit_vector() * 0.5f + vec3f{1.0f, 1.0f, 1.0f}));
+    
+    state->pause_game = true;
     
     return state;
 }
@@ -477,6 +485,125 @@ void output_sound(Sound_Buffer *sound_buffer, Immediate_Render_Context *imc) {
     }
 }
 
+
+#if 0
+f32 get_minmovement(Sphere3f a, vec3f a_movement, Sphere3f b, b_movement, f32 time)
+{
+    f32 min_time = time;
+    
+    for (s32 i = 0; i < 2; ++i) {
+        f32 t[2];
+        
+        vec3f movement = b_movement - a_movement;
+        
+        s32 collision_count;
+        if (squared_length(movement) != 0.0f) {
+            collision_count = movement_distance_until_collision(b.center - a.center, movement * time, b.radius + a.radius, t);
+        }
+        else
+            collision_count = -1;
+        
+        f32 movement_length = length(movement);
+        f32 d;
+        f32 margin = 0.1f;
+        
+        switch (collision_count) {
+            case -1: {
+                // pull appart by force!!!
+                vec3f movement = (b_movement + a_movement) * 0.5f;
+                
+                s32 collision_count = movement_distance_until_collision(b.center - a.center, movement, b.radius + a.radius + margin, t);
+                switch (collision_count) {
+                    case 1: {
+                        d = t[0];
+                        
+                    } break;
+                    
+                    case 2: {
+                        if ((t[0] != 0.0f) && (ABS(t[0]) < ABS(t[1])))
+                            d = t[0];
+                        else
+                            d = t[1];
+                    } break;
+                    
+                    default:
+                    UNREACHABLE_CODE
+                }
+                
+                a.center += movement * (d * -0.5f);
+                b.center += movement * (d * 0.5f);
+                
+                d = 1.0f;
+            } break;
+            
+            case 0:
+            case 1: {
+                d = 1.0f;
+            } break;
+            
+            case 2: {
+                if (t[0] >= 1.0f) {
+                    d = 1.0f;
+                    break;
+                }
+                
+                if (t[0] > 0.0f) {
+                    d = length(movement * (t[0] - margin / movement_length)) / movement_length;
+                    break;
+                }
+                
+                if (t[1] < 0.0f) {
+                    d = 1.0f;
+                    break;
+                }
+                
+                if (-t[0] < t[1])
+                    d = -length(movement * (t[0] - margin / movement_length)) / movement_length;
+                else
+                    d = length(movement * (t[1] + margin / movement_length)) / movement_length;
+            } break;
+            
+            default:
+            UNREACHABLE_CODE;
+        }
+        
+        rgba32 b_color = make_rgba32(vec3f{ 1, 0, 0 } * ((3 - i - 1)/3.0f));
+        rgba32 a_color = make_rgba32(vec3f{ 0, 0, 1 } * ((3 - i - 1)/3.0f));
+        
+        draw_line(imc, b.center, b.center + b_movement * d * time, b_color);
+        draw_circle(imc, b.center + b_movement * d * time, b.radius, b_color);
+        
+        
+        draw_line(imc, a.center, a.center + a_movement * d * time, a_color);
+        draw_circle(imc, a.center + a_movement * d * time, a.radius, a_color);
+        
+        
+        bool do_reflect = (d < 1.0f);
+        
+        vec3f b_next_center = b.center + b_movement * d * time;
+        vec3f a_next_center = a.center + a_movement * d * time;
+        
+        if (do_reflect) {
+            vec3f mirror_normal = normalize_or_zero(b.center - a.center);
+            b_movement = b_movement - mirror_normal * (2 * dot(mirror_normal, b_movement));
+            a_movement = a_movement - mirror_normal * (2 * dot(mirror_normal, a_movement));
+        }
+        
+        b.center = b_next_center;
+        a.center = a_next_center;
+        
+        min_time = MIN(min_time, time * d);
+        
+        time -= time * d;
+        
+        if (!do_reflect)
+            break;
+    }
+    
+    return min_time;
+}
+#endif
+
 APP_MAIN_LOOP_DEC(application_main_loop) {
     Application_State *state = CAST_P(Application_State, app_data_ptr);
     auto imc = &state->immediate_render_context;
@@ -516,12 +643,12 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     static f32 backup_game_speed = 1.0f;
     
     if (was_pressed(input->keys[VK_F5])) {
-        game_speed = MAX(1.0f / 32.0f, game_speed * 0.5f);
+        game_speed = MAX(1.0f / 16.0f, game_speed * 0.5f);
         backup_game_speed = 1.0f;
     }
     
     if (was_pressed(input->keys[VK_F6])) {
-        game_speed = MIN(32, game_speed * 2.0f);
+        game_speed = MIN(128, game_speed * 2.0f);
         backup_game_speed = 1.0f;
     }
     
@@ -836,72 +963,286 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     }
 #endif
     
+#if 0    
+    // debug sphere collosion
+    {
+        
+        Sphere3f a = { vec3f{}, 3.0f };
+        Sphere3f b = { vec3f{ -2, 0, 0 }, 1.0f };
+        
+        draw_circle(imc, a.center, a.radius, rgba32{0, 0, 255, 255});
+        draw_circle(imc, b.center, b.radius, rgba32{255, 0, 0, 255});
+        
+        f32 time = 1.0f;
+        vec3f a_movement = vec3f{ 3, 0, -4 };
+        vec3f b_movement = vec3f{ 0, 0, 4 };
+        
+        for (s32 i = 0; i < 2; ++i) {
+            f32 t[2];
+            
+            vec3f movement = b_movement - a_movement;
+            
+            s32 collision_count;
+            if (squared_length(movement) != 0.0f) {
+                collision_count = movement_distance_until_collision(b.center - a.center, movement * time, b.radius + a.radius, t);
+            }
+            else
+                collision_count = -1;
+            
+            f32 movement_length = length(movement);
+            f32 d;
+            f32 margin = 0.1f;
+            
+            switch (collision_count) {
+                case -1: {
+                    // pull appart by force!!!
+                    vec3f movement = (b_movement + a_movement) * 0.5f;
+                    
+                    s32 collision_count = movement_distance_until_collision(b.center - a.center, movement, b.radius + a.radius + margin, t);
+                    switch (collision_count) {
+                        case 1: {
+                            d = t[0];
+                            
+                        } break;
+                        
+                        case 2: {
+                            if ((t[0] != 0.0f) && (ABS(t[0]) < ABS(t[1])))
+                                d = t[0];
+                            else
+                                d = t[1];
+                        } break;
+                        
+                        default:
+                        UNREACHABLE_CODE
+                    }
+                    
+                    a.center += movement * (d * -0.5f);
+                    b.center += movement * (d * 0.5f);
+                    
+                    d = 1.0f;
+                } break;
+                
+                case 0:
+                case 1: {
+                    d = 1.0f;
+                } break;
+                
+                case 2: {
+                    if (t[0] >= 1.0f) {
+                        d = 1.0f;
+                        break;
+                    }
+                    
+                    if (t[0] > 0.0f) {
+                        d = t[0] - margin / movement_length;
+                        break;
+                    }
+                    
+                    if (t[1] < 0.0f) {
+                        d = 1.0f;
+                        break;
+                    }
+                    
+                    if (-t[0] < t[1])
+                        d = t[0] - margin / movement_length;
+                    else
+                        d = t[1] + margin / movement_length;
+                } break;
+                
+                default:
+                UNREACHABLE_CODE;
+            }
+            
+            rgba32 b_color = make_rgba32(vec3f{ 1, 0, 0 } * ((3 - i - 1)/3.0f));
+            rgba32 a_color = make_rgba32(vec3f{ 0, 0, 1 } * ((3 - i - 1)/3.0f));
+            
+            draw_line(imc, b.center, b.center + b_movement * d * time, b_color);
+            draw_circle(imc, b.center + b_movement * d * time, b.radius, b_color);
+            
+            
+            draw_line(imc, a.center, a.center + a_movement * d * time, a_color);
+            draw_circle(imc, a.center + a_movement * d * time, a.radius, a_color);
+            
+            
+            bool do_reflect = (d < 1.0f);
+            
+            vec3f b_next_center = b.center + b_movement * d * time;
+            vec3f a_next_center = a.center + a_movement * d * time;
+            
+            if (do_reflect) {
+                vec3f mirror_normal = normalize_or_zero(b.center - a.center);
+                b_movement = b_movement - mirror_normal * (2 * dot(mirror_normal, b_movement));
+                a_movement = a_movement - mirror_normal * (2 * dot(mirror_normal, a_movement));
+            }
+            
+            b.center = b_next_center;
+            a.center = a_next_center;
+            time -= time * d;
+            
+            if (do_reflect)
+                break;
+        }
+    }
+#endif
     
     Draw_Entity_Buffer draw_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Draw_Entity, state->entities.count * 4);
     Light_Entity_Buffer light_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Light_Entity, 10);
     
     // update physics and add draw, light entities
     
-    f32 seconds = delta_seconds;
+    f32 timestep = delta_seconds;
     
-    while (seconds > 0.001f) 
+    // Increase timestep in pause mode,
+    // to better visualize movement and collisions.
+    if (state->pause_game)
+        timestep = 2.0f;
+    
+    u32 physics_step_count = 0;
+    static u32 max_physics_step_count = 1;
+    
+    if (was_pressed(input->keys[VK_F9]))
+        --max_physics_step_count;
+    
+    if (was_pressed(input->keys[VK_F10]))
+        ++max_physics_step_count;
+    
+    if (was_pressed(input->keys[VK_F11]))
+        max_physics_step_count = -1;
+    
+    f32 margin = 0.1f;
+    
+    vec3f physics_color = vec3f{ 0.0f, 0.0f, 1.0f };
+    rgba32 physics_color_rgba = make_rgba32(physics_color);
+    
+    for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
+        if (a->parent)
+            continue;
+        
+        draw_circle(imc, a->to_world_transform.translation, a->radius, physics_color_rgba);
+        a->new_world_position = a->to_world_transform.translation;
+        a->new_velocity = a->velocity;
+    }
+    
+    while ((physics_step_count < max_physics_step_count) && (timestep > 0.001f)) 
     {
-        f32 max_allowed_timestep = seconds;
-        
-        for (auto a = first(state->entities); a != one_past_last(state->entities); ++a)
-            a->next_velocity = a->velocity;
-        
-        for (auto a = first(state->entities); a != back(state->entities); ++a) {
-            if (a->parent)
-                continue;
-            
-            Sphere3f sphere_a = { a->to_world_transform.translation, a->radius };
-            
-            for (auto b = a + 1; b != one_past_last(state->entities); ++b) {
-                if (b->parent)
-                    continue;
-                
-                Sphere3f sphere_b = { b->to_world_transform.translation, b->radius };
-                
-                vec3f movement = (b->velocity - a->velocity) * max_allowed_timestep;
-                //draw_line(imc, sphere_b.center, sphere_b.center + movement, rgba32{255, 255, 0, 255});
-                
-                bool can_collide;
-                f32 max_allowed_movement = CLAMP(distance_until_collision(sphere_a, sphere_b, movement, &can_collide), 0, 1);
-                
-                if (max_allowed_movement == 0) {
-                    //|sphere_a.center - a->velocity * t - sphere_b.center + b->velocity * t|² = (sphere_b.radius + sphere_b.radius)²;
-                }
-                
-                if (max_allowed_timestep > max_allowed_movement * seconds) {
-                    max_allowed_timestep = max_allowed_movement * seconds;
-                    
-                    vec3f mirror_normal = normalize_or_zero(sphere_a.center - sphere_b.center);
-                    
-                    //draw_line(imc, sphere_a.center, sphere_b.center, rgba32{255 , 0, 0,255});
-                    
-                    //draw_line(imc, sphere_b.center, sphere_b.center + movement, rgba32{255, 255, 0, 255});
-                    
-                    a->next_velocity = mirror_normal * (2 * dot(mirror_normal, -a->velocity)) + a->velocity;
-                    b->next_velocity = -mirror_normal * (2 * dot(-mirror_normal, -b->velocity)) + b->velocity;
-                }
-            }
-        }
+        f32 min_allowed_timestep = timestep;
         
         for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
             if (a->parent)
                 continue;
             
-            draw_circle(imc, a->to_world_transform.translation + a->velocity * max_allowed_timestep, a->radius, rgba32{0, 255, 255, 255});
-            draw_line(imc, a->to_world_transform.translation, a->to_world_transform.translation + a->next_velocity, rgba32{255 , 0, 0,255});
+            a->next_world_position = a->new_world_position + a->new_velocity * timestep;
+            a->next_velocity = a->new_velocity;
+            a->min_time_to_act = timestep;
+        }
+        
+        Entity *bodies[2];
+        for (bodies[0] = first(state->entities); bodies[0] != back(state->entities); ++bodies[0]) {
+            if (bodies[0]->parent)
+                continue;
             
-            a->to_world_transform.translation += a->velocity * max_allowed_timestep;
-            a->velocity = a->next_velocity;
+            Sphere3f spheres[2];
+            spheres[0] = { bodies[0]->new_world_position, bodies[0]->radius };
+            
+            for (bodies[1] = bodies[0] + 1; bodies[1] != one_past_last(state->entities); ++bodies[1]) {
+                if (bodies[1]->parent)
+                    continue;
+                
+                spheres[1] = { bodies[1]->new_world_position, bodies[1]->radius };
+                
+                //for (s32 i = 0; i < 2; ++i) 
+                {
+                    vec3f movement = bodies[1]->new_velocity - bodies[0]->new_velocity;
+                    
+                    if (squared_length(movement) == 0.0f)
+                        continue;
+                    
+                    f32 t[2];
+                    u32 collision_count = movement_distance_until_collision(spheres[1].center - spheres[0].center, movement * timestep, spheres[1].radius + spheres[0].radius, t);
+                    
+                    f32 movement_length = length(movement);
+                    f32 d;
+                    
+                    switch (collision_count) {
+                        case 0:
+                        case 1: {
+                            d = 1.0f;
+                        } break;
+                        
+                        case 2: {
+                            if (t[0] >= 1.0f) {
+                                d = 1.0f;
+                                break;
+                            }
+                            
+                            if (t[0] > 0.0f) {
+                                d = t[0] - margin / movement_length;
+                                break;
+                            }
+                            
+                            if (t[1] < 0.0f) {
+                                d = 1.0f;
+                                break;
+                            }
+                            
+                            if (-t[0] < t[1])
+                                d = t[0] - margin / movement_length;
+                            else
+                                d = t[1] + margin / movement_length;
+                        } break;
+                        
+                        default:
+                        UNREACHABLE_CODE;
+                    }
+                    
+                    
+                    if (d < 1.0f) {
+                        min_allowed_timestep = MIN(min_allowed_timestep, timestep * d);
+                        vec3f mirror_normal = normalize_or_zero(spheres[1].center - spheres[0].center);
+                        
+                        for (u32 body_index = 0; body_index < 2; ++body_index) {
+                            auto body = bodies[body_index];
+                            
+                            if (body->min_time_to_act > d * timestep) {
+                                body->min_time_to_act = d * timestep;
+                                body->next_world_position = body->new_world_position + body->new_velocity * d * timestep;
+                                
+                                body->next_velocity = body->new_velocity - mirror_normal * (2 * dot(mirror_normal, body->new_velocity));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        physics_color *= min_allowed_timestep;
+        physics_color_rgba = make_rgba32(physics_color);
+        
+        for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
+            if (a->parent)
+                continue;
+            
+            draw_line(imc, a->new_world_position, a->next_world_position, physics_color_rgba);
+            draw_circle(imc, a->next_world_position, a->radius, physics_color_rgba);
+            
+            a->new_world_position = a->next_world_position;
+            a->new_velocity = a->next_velocity;
         }
         
         draw_and_flush(imc);
         
-        seconds -= max_allowed_timestep;
+        timestep -= min_allowed_timestep;
+    }
+    
+    if (!state->pause_game) {
+        
+        for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
+            if (a->parent)
+                continue;
+            
+            a->to_world_transform.translation = a->new_world_position;
+            a->velocity = a->new_velocity;
+        }
     }
     
     for (auto entity = first(state->entities); entity != one_past_last(state->entities); ++entity)
@@ -910,7 +1251,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         if (!entity->parent) {
             if (!state->pause_game) {
-                entity->to_world_transform.translation += entity->velocity * delta_seconds;
+                //entity->to_world_transform.translation += entity->velocity * delta_seconds;
                 entity->orientation += entity->angular_velocity * delta_seconds;
             }
             
@@ -1016,6 +1357,9 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             }
         }
     }
+    
+    ui_printf(ui, ui->anchors.left + 5, ui->anchors.top - 30, S("max physics iteration: %"), f(max_physics_step_count));
+    ui_printf(ui, ui->anchors.left + 5, ui->anchors.top - 60, S("game_speed: %"), f(game_speed));
     
     ui_printf(ui, 5, 30, S("light count: %"), f(light_entities.count));
     
@@ -1135,9 +1479,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         else
             f_button_active[6] = true;
         
-        //ui->font_rendering.scale = 1.0f;
-        ui->font_rendering.alignment.x = 0.0f;
-        ui->font_rendering.alignment.y = 0.0f;
+        SCOPE_PUSH(ui->font_rendering.alignment, vec2f{});
+        SCOPE_PUSH(ui->font_rendering.color, {});
         
         for (u32 i = 0; i < ARRAY_COUNT(f_button_available); ++i)
         {
