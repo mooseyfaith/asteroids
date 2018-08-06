@@ -22,12 +22,14 @@ struct Entity {
     vec3f angular_rotation_axis;
     f32   angular_velocity;
     
+#if 0    
     f32 min_time_to_act;
     vec3f current_world_position;
     vec3f current_velocity;
     
     vec3f next_world_position;
     vec3f next_velocity;
+#endif
     
     vec4 diffuse_color;
     vec4 specular_color;
@@ -37,6 +39,30 @@ struct Entity {
     Ship_Entity *ship;
     Entity *parent;
 };
+
+struct Body {
+    Sphere3f sphere;
+    vec3f velocity;
+    vec3f next_center;
+    vec3f next_velocity;
+    f32 max_timestep;
+    u32 entity_index;
+};
+
+#define Template_Array_Type      Body_Array
+#define Template_Array_Data_Type Body
+#include "template_array.h"
+
+struct Clone_Body {
+    Sphere3f sphere;
+    u32 body_index;
+    u32 offset_to_next_body;
+};
+
+#define Template_Array_Type      Clone_Body_Array
+#define Template_Array_Data_Type Clone_Body
+#include "template_array.h"
+
 
 struct Ship_Entity {
     Entity *entity;
@@ -282,7 +308,7 @@ vec3f random_unit_vector(bool random_x = true, bool random_y = true, bool random
 
 void spawn_asteroid(Application_State *state, vec3f position, vec3f velocity, f32 scale, vec4f color) {
     Entity *asteroid = push(&state->entities, {});
-    asteroid->velocity = random_unit_vector(true, true, false) * random_f32(0.5f, 10.0f);
+    asteroid->velocity = random_unit_vector(true, true, false) * random_f32(3.0f, 10.0f);
     asteroid->diffuse_color = color;
     asteroid->is_asteroid = true;
     asteroid->mesh = &state->asteroid_mesh;
@@ -317,7 +343,7 @@ APP_INIT_DEC(application_init) {
     state->camera_to_clip_projection = make_perspective_fov_projection(60.0f, width_over_height(Reference_Resolution));
     state->clip_to_camera_projection = make_inverse_perspective_projection(state->camera_to_clip_projection);
     
-    init_immediate_render_context(&state->immediate_render_context, KILO(64), platform_api->read_file, &state->persistent_memory.allocator);
+    init_immediate_render_context(&state->immediate_render_context, KILO(128), platform_api->read_file, &state->persistent_memory.allocator);
     
     {
         init_ui_render_context(&state->ui_render_context, KILO(10), 512, KILO(4), &state->persistent_memory.allocator);
@@ -423,10 +449,10 @@ APP_INIT_DEC(application_init) {
     GetSystemTimeAsFileTime(&system_time);
     srand(system_time.dwLowDateTime);
     
-    for (u32 i = 0; i < 8; ++i)
+    for (u32 i = 0; i < 16; ++i)
         spawn_asteroid(state, random_unit_vector(true, true, false) * random_f32(10.0f, 30.0f), vec3f{ 1.0f, 1.0f, 0.0f }, 3.0f, make_vec4(random_unit_vector() * 0.5f + vec3f{1.0f, 1.0f, 1.0f}));
     
-    state->pause_game = true;
+    //state->pause_game = true;
     
     return state;
 }
@@ -687,22 +713,22 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     vec3f a = bottem_left_corner;
     vec3f b = a;
     b.y += area_size.y;
-    area_planes[0] = make_plane(cross(a - b, VEC3_Z_AXIS), a);
+    area_planes[0] = make_plane(cross(b - a, VEC3_Z_AXIS), a);
     draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[0].normal) * 5, rgba32{0, 0, 255, 255});
     
     a = b;
     a.x += area_size.x;
-    area_planes[1] = make_plane(cross(b - a, VEC3_Z_AXIS), a);
+    area_planes[1] = make_plane(cross(a - b, VEC3_Z_AXIS), a);
     draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[1].normal) * 5, rgba32{0, 0, 255, 255});
     
     b = a;
     b.y -= area_size.y;
-    area_planes[2] = make_plane(cross(a - b, VEC3_Z_AXIS), a);
+    area_planes[2] = make_plane(cross(b - a, VEC3_Z_AXIS), a);
     draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[2].normal) * 5, rgba32{0, 0, 255, 255});
     
     a = b;
     a.x -= area_size.x;
-    area_planes[3] = make_plane(cross(b - a, VEC3_Z_AXIS), a);
+    area_planes[3] = make_plane(cross(a - b, VEC3_Z_AXIS), a);
     draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[3].normal) * 5, rgba32{0, 0, 255, 255});
     
     // draw game area
@@ -858,13 +884,20 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     f32 margin = 0.1f;
     
-    for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
-        if (a->parent)
+    Body_Array bodies = {};
+    
+    for (auto entity = first(state->entities); entity != one_past_last(state->entities); ++entity) {
+        if (entity->parent)
             continue;
         
-        draw_circle(imc, a->to_world_transform.translation, a->radius, rgba32{ 255, 255, 0, 255 });
-        a->current_world_position = a->to_world_transform.translation;
-        a->current_velocity = a->velocity;
+        auto body = push(&bodies, null, 1, &state->transient_memory.allocator);
+        body->entity_index = index(state->entities, entity);
+        body->sphere = { entity->to_world_transform.translation, entity->radius };
+        body->velocity = entity->velocity;
+        
+        draw_circle(imc, entity->to_world_transform.translation, entity->radius, rgba32{ 255, 255, 0, 255 });
+        //entity->current_world_position = entity->to_world_transform.translation;
+        //entity->current_velocity = entity->velocity;
     }
     
     f32 debug_step_with   = 70.0f;
@@ -881,38 +914,72 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     {
         f32 min_allowed_timestep = timestep;
         
-        for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
-            if (a->parent)
-                continue;
+        Clone_Body_Array clones = {};
+        defer { if (clones.count) free(&state->transient_memory.allocator, clones.data); };
+        
+        for (auto body = first(bodies); body != one_past_last(bodies); ++body)
+        {
+            // force body inside game area
+            for (u32 plane_index = 0; plane_index < ARRAY_COUNT(area_planes); ++plane_index)
+            {
+                if (contains(area_planes[plane_index], body->sphere.center))
+                {
+                    vec3f offset = area_planes[plane_index].normal * (-2 * area_planes[plane_index].distance_to_origin / squared_length(area_planes[plane_index].normal));
+                    
+                    body->sphere.center += offset;
+                }
+            }
             
-            a->next_world_position = a->current_world_position + a->current_velocity * timestep;
-            a->next_velocity = a->current_velocity;
-            a->min_time_to_act = timestep;
+            u32 first_clone_index = clones.count;
+            
+            auto first_clone = push(&clones, null, 1, &state->transient_memory.allocator);
+            first_clone->body_index          = index(bodies, body);
+            first_clone->sphere              = body->sphere;
+            first_clone->offset_to_next_body = 1;
+            
+            for (u32 plane_index = 0; plane_index < ARRAY_COUNT(area_planes); ++plane_index)
+            {
+                if (intersect(area_planes[plane_index], body->sphere))
+                {
+                    u32 clone_count = first_clone->offset_to_next_body;
+                    
+                    vec3f offset = area_planes[plane_index].normal * (-2 * area_planes[plane_index].distance_to_origin / squared_length(area_planes[plane_index].normal));
+                    
+                    for (u32 clone_index = first_clone_index; clone_index < first_clone_index + clone_count; ++clone_index)
+                    {
+                        auto clone = push(&clones, clones + clone_index, 1, &state->transient_memory.allocator);
+                        clone->sphere.center += offset;
+                        clone->offset_to_next_body = first_clone_index + clone_count - clone_index;
+                        
+                        draw_circle(imc, clone->sphere.center, clone->sphere.radius, make_rgba32(vec3f{ 1, 0, 1 } * ((timestep) / max_timestep)));
+                        
+                        clones[clone_index].offset_to_next_body += clone_count;
+                    }
+                }
+            }
+            
+            body->next_velocity = body->velocity;
+            body->max_timestep  = timestep;
+            body->next_center   = body->sphere.center + body->velocity * body->max_timestep;
         }
         
-        Entity *bodies[2];
-        for (bodies[0] = first(state->entities); bodies[0] != back(state->entities); ++bodies[0]) {
-            if (bodies[0]->parent)
-                continue;
+        Clone_Body *clone_pair[2];
+        for (clone_pair[0] = first(clones); clone_pair[0] != one_past_last(clones); ++clone_pair[0]) {
+            Body *body_pair[2];
+            body_pair[0] = bodies + clone_pair[0]->body_index;
             
-            Sphere3f spheres[2];
-            spheres[0] = { bodies[0]->current_world_position, bodies[0]->radius };
-            
-            for (bodies[1] = bodies[0] + 1; bodies[1] != one_past_last(state->entities); ++bodies[1]) {
-                if (bodies[1]->parent)
-                    continue;
-                
-                spheres[1] = { bodies[1]->current_world_position, bodies[1]->radius };
+            for (clone_pair[1] = clone_pair[0] + clone_pair[0]->offset_to_next_body; clone_pair[1] != one_past_last(clones); ++clone_pair[1]) {
+                body_pair[1] = bodies + clone_pair[1]->body_index;
                 
                 //for (s32 i = 0; i < 2; ++i) 
                 {
-                    vec3f movement = bodies[1]->current_velocity - bodies[0]->current_velocity;
+                    vec3f movement = body_pair[1]->velocity - body_pair[0]->velocity;
                     
                     if (squared_length(movement) == 0.0f)
                         continue;
                     
                     f32 t[2];
-                    u32 collision_count = movement_distance_until_collision(spheres[1].center - spheres[0].center, movement * timestep, spheres[1].radius + spheres[0].radius, t);
+                    u32 collision_count = movement_distance_until_collision(clone_pair[1]->sphere.center - clone_pair[0]->sphere.center, movement * timestep, clone_pair[1]->sphere.radius + clone_pair[0]->sphere.radius, t);
                     
                     f32 movement_length = length(movement);
                     f32 d;
@@ -949,26 +1016,25 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                         UNREACHABLE_CODE;
                     }
                     
-                    
                     if (d < 1.0f) {
                         min_allowed_timestep = MIN(min_allowed_timestep, timestep * d);
-                        vec3f mirror_normal = normalize_or_zero(spheres[1].center - spheres[0].center);
+                        vec3f mirror_normal = normalize_or_zero(clone_pair[1]->sphere.center - clone_pair[0]->sphere.center);
                         
-                        for (s32 body_index = 0; body_index < 2; ++body_index) {
-                            auto body = bodies[body_index];
+                        for (s32 pair_index = 0; pair_index < 2; ++pair_index) {
+                            auto body = body_pair[pair_index];
                             
-                            if (body->min_time_to_act > d * timestep) {
-                                body->min_time_to_act = d * timestep;
-                                body->next_world_position = body->current_world_position + body->current_velocity * d * timestep;
+                            if (body->max_timestep > d * timestep) {
+                                body->max_timestep = d * timestep;
+                                body->next_center  = body->sphere.center + body->velocity * (d * timestep);
                                 
-                                //draw_line(imc, spheres[body_index].center, spheres[body_index].center + mirror_normal * (2 * (2 * body_index - 1)), rgba32{ 255, 0, 0, 255 });
+                                //draw_line(imc, spheres[pair_index].center, spheres[pair_index].center + mirror_normal * (2 * (2 * pair_index - 1)), rgba32{ 255, 0, 0, 255 });
                                 
                                 // reflect velocity
                                 
-                                if (dot(mirror_normal * (body_index * 2 - 1), body->current_velocity) <= 0)
-                                    body->next_velocity = body->current_velocity - mirror_normal * (2 * dot(mirror_normal, body->current_velocity));
+                                if (dot(mirror_normal * (pair_index * 2 - 1), body->velocity) <= 0)
+                                    body->next_velocity = body->velocity - mirror_normal * (2 * dot(mirror_normal, body->velocity));
                                 else
-                                    body->next_velocity = body->current_velocity;
+                                    body->next_velocity = body->velocity;
                             }
                         }
                     }
@@ -988,23 +1054,28 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             debug_step_last_mark = next_mark;
         }
         
-        for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
-            if (a->parent)
-                continue;
+        for (auto body = first(bodies); body != one_past_last(bodies); ++body) {
+            draw_line(imc, body->sphere.center, body->next_center, physics_color_rgba);
+            draw_circle(imc, body->next_center, body->sphere.radius, physics_color_rgba);
             
-            draw_line(imc, a->current_world_position, a->next_world_position, physics_color_rgba);
-            draw_circle(imc, a->next_world_position, a->radius, physics_color_rgba);
-            
-            a->current_world_position = a->next_world_position;
-            a->current_velocity = a->next_velocity;
+            body->sphere.center = body->next_center;
+            body->velocity      = body->next_velocity;
         }
         
         ++physics_step_count;
         timestep -= min_allowed_timestep;
+        
+        draw_and_flush(imc);
     }
     
     if (!state->pause_game) {
         
+        for (auto body = first(bodies); body != one_past_last(bodies); ++body) {
+            state->entities[body->entity_index].to_world_transform.translation = body->sphere.center;
+            state->entities[body->entity_index].velocity                       = body->velocity;
+        }
+        
+#if 0        
         for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
             if (a->parent)
                 continue;
@@ -1012,6 +1083,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             a->to_world_transform.translation = a->current_world_position;
             a->velocity = a->current_velocity;
         }
+#endif
     }
 #endif
     
@@ -1034,6 +1106,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             entity_to_world_transform = entity->parent->to_world_transform * entity->to_world_transform;
         }
         
+#if 0        
         if (entity_to_world_transform.translation.x - bottem_left_corner.x < 0.0f) {
             entity_to_world_transform.translation.x = area_size.x - dirty_mod(entity_to_world_transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
         }
@@ -1047,6 +1120,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         else {
             entity_to_world_transform.translation.y = dirty_mod(entity_to_world_transform.translation.y - bottem_left_corner.y, area_size.y) + bottem_left_corner.y;
         }
+#endif
         
         entity_to_world_transform = make_transform(make_quat(entity->angular_rotation_axis, entity->orientation), entity_to_world_transform.translation, make_vec3_scale(entity->scale));
         
