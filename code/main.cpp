@@ -394,7 +394,7 @@ APP_INIT_DEC(application_init) {
     load_phong_shader(state, platform_api);
     
     state->font_lib = make_font_library();
-    state->font = make_font(state->font_lib, S("C:/Windows/Fonts/arial.ttf"), 32, ' ', 128, platform_api->read_file, &state->persistent_memory.allocator);
+    state->font = make_font(state->font_lib, S("C:/Windows/Fonts/arial.ttf"), 10, ' ', 128, platform_api->read_file, &state->persistent_memory.allocator);
     set_texture_filter_level(state->font.texture.object, Texture_Filter_Level_Linear);
     
     state->ui_font_material.base.bind_material = bind_ui_font_material;
@@ -511,6 +511,10 @@ void output_sound(Sound_Buffer *sound_buffer, Immediate_Render_Context *imc) {
     }
 }
 
+vec3f mirror_offset(Plane3f plane) {
+    return plane.orthogonal * (-2 * plane.distance_to_origin / squared_length(plane.orthogonal));
+}
+
 APP_MAIN_LOOP_DEC(application_main_loop) {
     Application_State *state = CAST_P(Application_State, app_data_ptr);
     auto imc = &state->immediate_render_context;
@@ -591,13 +595,14 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     set_auto_viewport(state->main_window_area.size, render_resolution, background_color);
     
     // enable to scale text relative to Reference_Resolution
-#if 1
+#if 0
     ui_set_transform(ui, Reference_Resolution, 1.0f);
 #else
     ui_set_transform(ui, render_resolution, 1.0f);
 #endif
     
     ui_set_font(ui, &state->font, CAST_P(Render_Material, &state->ui_font_material));
+    ui->font_rendering.color = rgba32{ 255, 255, 255, 255 };
     
     if (was_pressed(input->keys[VK_F1]))
         state->in_debug_mode = !state->in_debug_mode;
@@ -714,22 +719,22 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     vec3f b = a;
     b.y += area_size.y;
     area_planes[0] = make_plane(cross(b - a, VEC3_Z_AXIS), a);
-    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[0].normal) * 5, rgba32{0, 0, 255, 255});
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[0].orthogonal) * 5, rgba32{0, 0, 255, 255});
     
     a = b;
     a.x += area_size.x;
     area_planes[1] = make_plane(cross(a - b, VEC3_Z_AXIS), a);
-    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[1].normal) * 5, rgba32{0, 0, 255, 255});
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[1].orthogonal) * 5, rgba32{0, 0, 255, 255});
     
     b = a;
     b.y -= area_size.y;
     area_planes[2] = make_plane(cross(b - a, VEC3_Z_AXIS), a);
-    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[2].normal) * 5, rgba32{0, 0, 255, 255});
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[2].orthogonal) * 5, rgba32{0, 0, 255, 255});
     
     a = b;
     a.x -= area_size.x;
     area_planes[3] = make_plane(cross(a - b, VEC3_Z_AXIS), a);
-    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[3].normal) * 5, rgba32{0, 0, 255, 255});
+    draw_line(imc, (a + b) * 0.5f, (a + b) * 0.5f + normalize(area_planes[3].orthogonal) * 5, rgba32{0, 0, 255, 255});
     
     // draw game area
     draw_rect(imc, bottem_left_corner, vec3{ area_size.x, 0.0f, 0.0f }, vec3{ 0.0f, area_size.y, 0.0f }, make_rgba32(1.0f, 1.0f, 0.0f));
@@ -896,8 +901,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         body->velocity = entity->velocity;
         
         draw_circle(imc, entity->to_world_transform.translation, entity->radius, rgba32{ 255, 255, 0, 255 });
-        //entity->current_world_position = entity->to_world_transform.translation;
-        //entity->current_velocity = entity->velocity;
     }
     
     f32 debug_step_with   = 70.0f;
@@ -910,7 +913,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     f32 timestep = max_timestep;
     u32 physics_step_count = 0;
-    while ((!max_physics_step_count || (physics_step_count < max_physics_step_count)) && (timestep > 0.001f)) 
+    while ((!max_physics_step_count || (physics_step_count < max_physics_step_count)) && (timestep > 0.00001f)) 
     {
         f32 min_allowed_timestep = timestep;
         
@@ -919,17 +922,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         for (auto body = first(bodies); body != one_past_last(bodies); ++body)
         {
-            // force body inside game area
-            for (u32 plane_index = 0; plane_index < ARRAY_COUNT(area_planes); ++plane_index)
-            {
-                if (contains(area_planes[plane_index], body->sphere.center))
-                {
-                    vec3f offset = area_planes[plane_index].normal * (-2 * area_planes[plane_index].distance_to_origin / squared_length(area_planes[plane_index].normal));
-                    
-                    body->sphere.center += offset;
-                }
-            }
-            
             u32 first_clone_index = clones.count;
             
             auto first_clone = push(&clones, null, 1, &state->transient_memory.allocator);
@@ -943,7 +935,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                 {
                     u32 clone_count = first_clone->offset_to_next_body;
                     
-                    vec3f offset = area_planes[plane_index].normal * (-2 * area_planes[plane_index].distance_to_origin / squared_length(area_planes[plane_index].normal));
+                    vec3f offset = mirror_offset(area_planes[plane_index]);
                     
                     for (u32 clone_index = first_clone_index; clone_index < first_clone_index + clone_count; ++clone_index)
                     {
@@ -963,27 +955,63 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             body->next_center   = body->sphere.center + body->velocity * body->max_timestep;
         }
         
-        Clone_Body *clone_pair[2];
-        for (clone_pair[0] = first(clones); clone_pair[0] != one_past_last(clones); ++clone_pair[0]) {
+        for (auto clone = first(clones); clone != one_past_last(clones); ++clone)
+        {
             Body *body_pair[2];
-            body_pair[0] = bodies + clone_pair[0]->body_index;
+            body_pair[0] = bodies + clone->body_index;
+            Sphere3f static_sphere = clone->sphere;
             
-            for (clone_pair[1] = clone_pair[0] + clone_pair[0]->offset_to_next_body; clone_pair[1] != one_past_last(clones); ++clone_pair[1]) {
-                body_pair[1] = bodies + clone_pair[1]->body_index;
+            for (body_pair[1] = body_pair[0] + 1; body_pair[1] != one_past_last(bodies); ++body_pair[1]) 
+                //for (auto moving_clone = clone + clone->offset_to_next_body; moving_clone != one_past_last(clones); ++moving_clone)
+            {
+                //body_pair[1] = bodies + moving_clone->body_index;
+                vec3f movement = body_pair[1]->velocity - body_pair[0]->velocity;
                 
-                //for (s32 i = 0; i < 2; ++i) 
+                if (squared_length(movement) == 0.0f)
+                    continue;
+                
+                f32 movement_length = length(movement);
+                
+                Sphere3f moving_sphere = body_pair[1]->sphere;
+                f32 remaining_timestep = timestep;
+                f32 whole_timestep = 0.0f;
+                
+                //draw_circle(imc, moving_sphere.center, moving_sphere.radius, rgba32{ 255, 0, 0, 255 });
+                //draw_line(imc, moving_sphere.center, moving_sphere.center + movement * timestep, rgba32{ 255, 255, 0, 255 });
+                
+                while (true)
                 {
-                    vec3f movement = body_pair[1]->velocity - body_pair[0]->velocity;
+                    assert(remaining_timestep > 0.0f);
                     
-                    if (squared_length(movement) == 0.0f)
+                    f32 moving_timestep = remaining_timestep;
+                    bool movement_was_split = false;
+                    
+                    vec3f next_moving_sphere_center;
+                    
+                    for (u32 plane_index = 0; plane_index < ARRAY_COUNT(area_planes); ++plane_index) {
+                        f32 time_until_split = (area_planes[plane_index].distance_to_origin - dot(area_planes[plane_index].orthogonal, moving_sphere.center)) /
+                            dot(area_planes[plane_index].orthogonal, movement);
+                        
+                        if ((time_until_split == 0.0f) && (dot(area_planes[plane_index].orthogonal, movement) >= 0.0f))
+                            continue;
+                        
+                        if ((time_until_split >= 0.0f) && (time_until_split < moving_timestep)) {
+                            moving_timestep = time_until_split;
+                            next_moving_sphere_center = moving_sphere.center + movement * time_until_split + mirror_offset(area_planes[plane_index]);
+                            
+                            movement_was_split = true;
+                        }
+                    }
+                    
+                    if (moving_timestep == 0.0f) {
+                        moving_sphere.center = next_moving_sphere_center;
                         continue;
+                    }
                     
                     f32 t[2];
-                    u32 collision_count = movement_distance_until_collision(clone_pair[1]->sphere.center - clone_pair[0]->sphere.center, movement * timestep, clone_pair[1]->sphere.radius + clone_pair[0]->sphere.radius, t);
+                    u32 collision_count = movement_distance_until_collision(moving_sphere.center - static_sphere.center, movement * moving_timestep, moving_sphere.radius + static_sphere.radius, t);
                     
-                    f32 movement_length = length(movement);
                     f32 d;
-                    
                     switch (collision_count) {
                         case 0:
                         case 1: {
@@ -1016,50 +1044,100 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                         UNREACHABLE_CODE;
                     }
                     
+                    // HACK: ignore small movements
+                    if (d < 0.001)
+                        d = 0.0f;
+                    
+                    whole_timestep += moving_timestep * d;
+                    
                     if (d < 1.0f) {
-                        min_allowed_timestep = MIN(min_allowed_timestep, timestep * d);
-                        vec3f mirror_normal = normalize_or_zero(clone_pair[1]->sphere.center - clone_pair[0]->sphere.center);
+                        min_allowed_timestep = MIN(min_allowed_timestep, whole_timestep);
+                        vec3f mirror_normal = normalize_or_zero(moving_sphere.center + body_pair[1]->velocity * (moving_timestep * d) - (static_sphere.center + body_pair[0]->velocity * whole_timestep));
                         
                         for (s32 pair_index = 0; pair_index < 2; ++pair_index) {
                             auto body = body_pair[pair_index];
                             
-                            if (body->max_timestep > d * timestep) {
-                                body->max_timestep = d * timestep;
-                                body->next_center  = body->sphere.center + body->velocity * (d * timestep);
-                                
-                                //draw_line(imc, spheres[pair_index].center, spheres[pair_index].center + mirror_normal * (2 * (2 * pair_index - 1)), rgba32{ 255, 0, 0, 255 });
+                            if (body->max_timestep > whole_timestep) {
+                                body->max_timestep = whole_timestep;
+                                body->next_center  = body->sphere.center + body->velocity * whole_timestep;
                                 
                                 // reflect velocity
-                                
                                 if (dot(mirror_normal * (pair_index * 2 - 1), body->velocity) <= 0)
                                     body->next_velocity = body->velocity - mirror_normal * (2 * dot(mirror_normal, body->velocity));
                                 else
                                     body->next_velocity = body->velocity;
                             }
                         }
+                        
+                        break;
                     }
+                    
+                    if (!movement_was_split)
+                        break;
+                    
+                    //draw_circle(imc, next_moving_sphere_center, moving_sphere.radius, rgba32{ 255, 0, 0, 255 });
+                    
+                    remaining_timestep -= moving_timestep;
+                    moving_sphere.center = next_moving_sphere_center;
                 }
             }
         }
         
-        rgba32 physics_color_rgba = make_rgba32(vec3f{ 0, 0, 1 } * ((timestep) / max_timestep));
+        rgba32 old_timestep_color = make_rgba32(vec3f{ 0, 0, 1 } * ((max_timestep - timestep) / max_timestep));
+        rgba32 new_timestep_color = make_rgba32(vec3f{ 0, 0, 1 } * ((max_timestep - timestep + min_allowed_timestep) / max_timestep));
         
         // draw relative timestep in scale
         {
             vec3f next_mark = debug_step_last_mark + vec3f{ min_allowed_timestep * debug_step_with / max_timestep };
             
-            draw_line(imc, debug_step_last_mark, next_mark, physics_color_rgba);
-            draw_line(imc, next_mark + vec3f{ 0, debug_step_height * 0.5f}, next_mark - vec3f{ 0, debug_step_height * 0.5f}, physics_color_rgba);
+            draw_line(imc, debug_step_last_mark, next_mark, old_timestep_color, true, new_timestep_color);
+            draw_line(imc, next_mark + vec3f{ 0, debug_step_height * 0.5f}, next_mark - vec3f{ 0, debug_step_height * 0.5f}, new_timestep_color);
             
             debug_step_last_mark = next_mark;
         }
         
         for (auto body = first(bodies); body != one_past_last(bodies); ++body) {
-            draw_line(imc, body->sphere.center, body->next_center, physics_color_rgba);
-            draw_circle(imc, body->next_center, body->sphere.radius, physics_color_rgba);
+            
+            vec3f old_center = body->sphere.center;
             
             body->sphere.center = body->next_center;
-            body->velocity      = body->next_velocity;
+            
+            f32 min_distance_to_border = min_allowed_timestep;
+            
+            bool was_outside_game_area;
+            do {
+                was_outside_game_area = false;
+                
+                f32 min_distance_to_border;
+                vec3f offset = vec3f{};
+                
+                // force body inside game area
+                for (u32 plane_index = 0; plane_index < ARRAY_COUNT(area_planes); ++plane_index)
+                {
+                    if (contains(area_planes[plane_index], body->sphere.center)) {
+                        f32 d = (area_planes[plane_index].distance_to_origin - dot(area_planes[plane_index].orthogonal, old_center)) /
+                            dot(area_planes[plane_index].orthogonal, body->velocity);
+                        
+                        if (!was_outside_game_area || (min_distance_to_border > d)) {
+                            min_distance_to_border = d;
+                            offset = mirror_offset(area_planes[plane_index]);
+                            was_outside_game_area = true;
+                        }
+                    }
+                }
+                
+                if (was_outside_game_area) {
+                    draw_line(imc, old_center, old_center + body->velocity * min_distance_to_border, old_timestep_color, true, new_timestep_color);
+                    
+                    body->sphere.center += offset;
+                    old_center = old_center + body->velocity * min_distance_to_border + offset;
+                }
+            } while (was_outside_game_area);
+            
+            draw_line(imc, old_center, body->sphere.center, old_timestep_color, true, new_timestep_color);
+            draw_circle(imc, body->sphere.center, body->sphere.radius, new_timestep_color);
+            
+            body->velocity = body->next_velocity;
         }
         
         ++physics_step_count;
@@ -1068,22 +1146,44 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         draw_and_flush(imc);
     }
     
+    static u32 frame_count = 0;
+    frame_count++;
+    
+    static u32 physics_interation_count_accumalated = 0;
+    static f32 physics_interation_count_average = 0.0f;
+    
+    physics_interation_count_accumalated += physics_step_count;
+    static u32 physics_interation_max_count = 0;
+    physics_interation_max_count = MAX(physics_interation_max_count, physics_step_count);
+    
+    static f32 fps_accumalated = 0.0f;
+    static f32 fps_average = 0.0f;
+    fps_accumalated += game_speed / delta_seconds;
+    
+    const f32 trottle_timeout = 1.0f;
+    static f32 trottle_countdown = trottle_timeout;
+    trottle_countdown -= delta_seconds / game_speed;
+    
+    if (trottle_countdown <= 0.0f) {
+        trottle_countdown += trottle_timeout;
+        
+        fps_average = fps_accumalated / frame_count;
+        physics_interation_count_average = physics_interation_count_accumalated / cast_v(f32, frame_count);
+        
+        frame_count = 0;
+        fps_accumalated = 0.0f;
+        physics_interation_count_accumalated = 0;
+    }
+    
+    ui_printf(ui, 5, 120, S("physics iteration count: % (%)"), f(physics_interation_count_average), f(physics_interation_max_count));
+    ui_printf(ui, 5, 90, S("fps: %"), f(fps_average));
+    
     if (!state->pause_game) {
         
         for (auto body = first(bodies); body != one_past_last(bodies); ++body) {
             state->entities[body->entity_index].to_world_transform.translation = body->sphere.center;
             state->entities[body->entity_index].velocity                       = body->velocity;
         }
-        
-#if 0        
-        for (auto a = first(state->entities); a != one_past_last(state->entities); ++a) {
-            if (a->parent)
-                continue;
-            
-            a->to_world_transform.translation = a->current_world_position;
-            a->velocity = a->current_velocity;
-        }
-#endif
     }
 #endif
     
@@ -1105,22 +1205,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             assert(entity > entity->parent);
             entity_to_world_transform = entity->parent->to_world_transform * entity->to_world_transform;
         }
-        
-#if 0        
-        if (entity_to_world_transform.translation.x - bottem_left_corner.x < 0.0f) {
-            entity_to_world_transform.translation.x = area_size.x - dirty_mod(entity_to_world_transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
-        }
-        else {
-            entity_to_world_transform.translation.x = dirty_mod(entity_to_world_transform.translation.x - bottem_left_corner.x, area_size.x) + bottem_left_corner.x;
-        }
-        
-        if (entity_to_world_transform.translation.y - bottem_left_corner.y < 0.0f) {
-            entity_to_world_transform.translation.y = area_size.y - dirty_mod(entity_to_world_transform.translation.y - bottem_left_corner.y, area_size.y) + bottem_left_corner.y;
-        }
-        else {
-            entity_to_world_transform.translation.y = dirty_mod(entity_to_world_transform.translation.y - bottem_left_corner.y, area_size.y) + bottem_left_corner.y;
-        }
-#endif
         
         entity_to_world_transform = make_transform(make_quat(entity->angular_rotation_axis, entity->orientation), entity_to_world_transform.translation, make_vec3_scale(entity->scale));
         
@@ -1239,7 +1323,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     // lights
     
     Light_Entity main_light;
-    main_light.world_position = VEC3_Y_AXIS * 5; //  camera_world_position;
+    main_light.world_position = VEC3_Z_AXIS * 5; //  camera_world_position;
     //main_light.world_position = camera_world_position;
     main_light.diffuse_color  = vec4f{1, 1, 1, 1};
     main_light.specular_color = vec4f{1, 1, 1, 1};
@@ -1271,6 +1355,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     }
     
     // render queue draw entities
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
     
     for (auto draw_entity = first(draw_entities); draw_entity != one_past_last(draw_entities); ++draw_entity)
     {
@@ -1347,16 +1433,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             
             ui_printf(ui, x + button_width/2, y - button_height/2, S("F%"), f(i + 1));
         }
-        
-        //Mif (state->in_debug_mode)
     }
-    
     
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     draw_and_flush(imc);
     
     glEnable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
+    //
     draw(ui);
 }
