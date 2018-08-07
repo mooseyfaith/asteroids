@@ -1010,7 +1010,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                     
                     f32 t[2];
                     u32 collision_count = movement_distance_until_collision(moving_sphere.center - static_sphere.center, movement * moving_timestep, moving_sphere.radius + static_sphere.radius, t);
-                    
                     f32 d;
                     switch (collision_count) {
                         case 0:
@@ -1025,7 +1024,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                             }
                             
                             if (t[0] > 0.0f) {
-                                d = t[0] - margin / movement_length;
+                                d = MAX(0.0f, t[0] - margin / movement_length);
                                 break;
                             }
                             
@@ -1034,19 +1033,33 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                                 break;
                             }
                             
-                            if (-t[0] < t[1])
-                                d = t[0] - margin / movement_length;
-                            else
-                                d = t[1] + margin / movement_length;
+                            // spheres are overlapping
+                            // find minimal time to pull them appart
+                            // either in past or in future
+                            if (-t[0] < t[1]) {
+                                // rewind time until collision
+                                //d = t[0] - margin / movement_length;
+                                
+                                // dont rewind, just ignore small overlaps and reflect
+                                d = 0.0f;
+                            }
+                            else {
+                                // sphere passed through, so we can also continue with full movement
+                                //d = t[1] + margin / movement_length;
+                                d = 1.0f;
+                            }
                         } break;
                         
                         default:
                         UNREACHABLE_CODE;
                     }
                     
+#if 0
                     // HACK: ignore small movements
+                    // also ignores rewinding time
                     if (d < 0.001)
                         d = 0.0f;
+#endif
                     
                     whole_timestep += moving_timestep * d;
                     
