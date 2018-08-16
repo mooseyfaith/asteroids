@@ -27,10 +27,14 @@
 //  INTERFACE                                                                // 
 ///////////////////////////////////////////////////////////////////////////////
 
-uniform mat4   u_camera_to_clip_projection;
-uniform mat4x3 u_world_to_camera_transform;
+layout (std140, column_major) uniform Camera_Uniform_Block
+{ 
+	mat4   u_camera_to_clip_projection;
+	mat4x3 u_world_to_camera_transform;
+	vec3   u_camera_world_position;
+};
+
 uniform mat4x3 u_object_to_world_transform;
-uniform vec3   u_camera_world_position;
 
 uniform vec4 u_ambient_color;
 uniform vec4 u_diffuse_color;
@@ -56,13 +60,14 @@ VERTEX_OUT vec3 camera_direction;
 
 #if defined MAX_LIGHT_COUNT
 
-uniform float u_shininess;
+layout (std140) uniform Lighting_Uniform_Block {
+	vec4 u_light_diffuse_colors[MAX_LIGHT_COUNT];
+	vec4 u_light_specular_colors[MAX_LIGHT_COUNT];
+	vec4 u_light_world_positions_and_attenuations[MAX_LIGHT_COUNT];
+	uint u_light_count;
+};
 
-uniform vec3  u_light_world_positions[MAX_LIGHT_COUNT];
-uniform vec4  u_light_diffuse_colors[MAX_LIGHT_COUNT];
-uniform vec4  u_light_specular_colors[MAX_LIGHT_COUNT];
-uniform float u_light_attenuations[MAX_LIGHT_COUNT];
-uniform uint  u_light_count;
+uniform float u_shininess;
 
 VERTEX_OUT vec3 light_distances[MAX_LIGHT_COUNT];
 
@@ -131,7 +136,7 @@ void main() {
 #if defined MAX_LIGHT_COUNT
 	for (uint light_index = uint(0); light_index < u_light_count; ++light_index)
 	{
-		light_distances[light_index] = transformed_direction(world_to_tangent_transform, u_light_world_positions[light_index] - world_position);
+		light_distances[light_index] = transformed_direction(world_to_tangent_transform, u_light_world_positions_and_attenuations[light_index].xyz - world_position);
 	}
 #endif
 
@@ -180,7 +185,7 @@ void main() {
 
 		vec3 r = (normal * (2.0 * dot(light_dir, normal)) - light_dir);
 
-		float attenuation = 1.0 / (1.0 + u_light_attenuations[light_index] * dot(light_distance, light_distance));
+		float attenuation = 1.0 / (1.0 + u_light_world_positions_and_attenuations[light_index].w * dot(light_distance, light_distance));
 
 		float intensity = max(0.0, dot(normal, light_dir));
 

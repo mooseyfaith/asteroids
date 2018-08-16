@@ -22,15 +22,6 @@ struct Entity {
     vec3f angular_rotation_axis;
     f32   angular_velocity;
     
-#if 0    
-    f32 min_time_to_act;
-    vec3f current_world_position;
-    vec3f current_velocity;
-    
-    vec3f next_world_position;
-    vec3f next_velocity;
-#endif
-    
     vec4 diffuse_color;
     vec4 specular_color;
     bool is_asteroid;
@@ -47,6 +38,7 @@ struct Body {
     vec3f next_velocity;
     f32 max_timestep;
     u32 entity_index;
+    u32 first_clone_index;
 };
 
 #define Template_Array_Type      Body_Array
@@ -98,6 +90,30 @@ struct Light_Entity {
 #define Template_Array_Is_Buffer
 #include "template_array.h"
 
+// all aliginged to vec4, since layout (std140) sux!!!
+struct Camera_Uniform_Block {
+    mat4f camera_to_clip_projection;
+    // actually a 4x3 but after each vec3 ther is 1 f32 padding
+    mat4f world_to_camera_transform;
+    vec3f camera_world_position;
+    f32 padding0;
+};
+
+#define MAX_LIGHT_COUNT 10
+
+struct Lighting_Uniform_Block {
+    vec4f diffuse_colors[MAX_LIGHT_COUNT];
+    vec4f specular_colors[MAX_LIGHT_COUNT];
+    vec4f world_positions_and_attenuations[MAX_LIGHT_COUNT];
+    u32 count;
+    u32 padding[3];
+};
+
+enum {
+    Camera_Uniform_Block_Index = 0,
+    Lighting_Uniform_Block_Index,
+};
+
 struct Application_State {
     Memory_Growing_Stack_Allocator_Info persistent_memory;
     Memory_Growing_Stack_Allocator_Info transient_memory;
@@ -143,7 +159,16 @@ struct Application_State {
     
     vec2f last_mouse_window_position;
     
-    Mesh ship_mesh, asteroid_mesh, beam_mesh;
+    Mesh ship_mesh, asteroid_mesh, beam_mesh, planet_mesh;
+    
+    union {
+        struct {
+            GLuint projection_uniform_buffer_object;
+            GLuint lighting_uniform_buffer_object;
+        };
+        
+        GLuint uniform_buffer_objects[2];
+    };
     
     struct {
         GLuint program_object;
@@ -151,17 +176,9 @@ struct Application_State {
         union {
             
 #define PHONG_UNIFORMS \
-            u_camera_to_clip_projection, \
-            u_world_to_camera_transform, \
             u_object_to_world_transform, \
-            u_camera_world_position, \
             u_bone_transforms, \
             u_shininess, \
-            u_light_world_positions, \
-            u_light_diffuse_colors, \
-            u_light_specular_colors, \
-            u_light_attenuations, \
-            u_light_count, \
             u_ambient_color, \
             u_diffuse_texture, \
             u_diffuse_color, \
@@ -172,9 +189,41 @@ struct Application_State {
             // sadly we cannot automate this,
             // but make_shader_program will catch a missmatch
             // while parsing the uniform_names string
-            GLint uniforms[15];
+            GLint uniforms[7];
         };
+        
+        GLuint camera_uniform_block;
+        GLuint lighting_uniform_block;
+        
     } phong_shader;
+    
+    struct {
+        GLuint program_object;
+        
+        union {
+            
+#define WATER_SHADER_UNIFORMS \
+            u_object_to_world_transform, \
+            u_bone_transforms, \
+            u_phase, \
+            u_shininess, \
+            u_ambient_color, \
+            u_diffuse_texture, \
+            u_diffuse_color, \
+            u_normal_map
+            
+            struct { GLint WATER_SHADER_UNIFORMS; };
+            
+            // sadly we cannot automate this,
+            // but make_shader_program will catch a missmatch
+            // while parsing the uniform_names string
+            GLint uniforms[8];
+        };
+        
+        GLuint camera_uniform_block;
+        GLuint lighting_uniform_block;
+        
+    } water_shader;
     
     Texture asteroid_normal_map;
     Texture asteroid_ambient_occlusion_map;
@@ -194,7 +243,7 @@ struct Application_State {
 
 Pixel_Dimensions const Reference_Resolution = { 1280, 720 };
 
-f32 const Debug_Camera_Move_Speed = 100.0f;
+f32 const Debug_Camera_Move_Speed = 50.0f;
 f32 const Debug_Camera_Mouse_Sensitivity = 2.0f * PIf / 2048.0f;
 vec3f const Debug_Camera_Axis_Alpha = VEC3_Z_AXIS;
 vec3f const Debug_Camera_Axis_Beta  = VEC3_X_AXIS;
@@ -226,6 +275,8 @@ void bind_ui_font_material(any new_material_pointer, any old_material_pointer) {
 
 void load_phong_shader(Application_State *state, Platform_API *platform_api)
 {
+    defer { assert(state->phong_shader.program_object); };
+    
     string shader_source = platform_api->read_file(S("shaders/phong.shader.txt"), &state->transient_memory.allocator);
     assert(shader_source.count);
     
@@ -265,6 +316,9 @@ void load_phong_shader(Application_State *state, Platform_API *platform_api)
     shader_objects[0] = make_shader_object(GL_VERTEX_SHADER, ARRAY_WITH_COUNT(vertex_shader_sources), &state->transient_memory.allocator);
     shader_objects[1] = make_shader_object(GL_FRAGMENT_SHADER, ARRAY_WITH_COUNT(fragment_shader_sources), &state->transient_memory.allocator);
     
+    if (!shader_objects[0] || !shader_objects[1])
+        return;
+    
     GLint uniforms[ARRAY_COUNT(state->phong_shader.uniforms)];
     
     GLuint program_object = make_shader_program(ARRAY_WITH_COUNT(shader_objects), true, ARRAY_WITH_COUNT(attributes), uniform_names, ARRAY_WITH_COUNT(uniforms), &state->transient_memory.allocator
@@ -276,8 +330,83 @@ void load_phong_shader(Application_State *state, Platform_API *platform_api)
             glDeleteProgram(state->phong_shader.program_object);
         }
         
+        state->phong_shader.camera_uniform_block = glGetUniformBlockIndex(program_object, "Camera_Uniform_Block");
+        glUniformBlockBinding(program_object, state->phong_shader.camera_uniform_block, Camera_Uniform_Block_Index);
+        
+        state->phong_shader.lighting_uniform_block = glGetUniformBlockIndex(program_object, "Lighting_Uniform_Block");
+        glUniformBlockBinding(program_object, state->phong_shader.lighting_uniform_block, Lighting_Uniform_Block_Index);
+        
+        
         state->phong_shader.program_object = program_object;
         COPY(state->phong_shader.uniforms, uniforms, sizeof(uniforms));
+    }
+}
+
+void load_water_shader(Application_State *state, Platform_API *platform_api)
+{
+    defer { assert(state->water_shader.program_object); };
+    
+    string shader_source = platform_api->read_file(S("shaders/water.shader.txt"), &state->transient_memory.allocator);
+    assert(shader_source.count);
+    
+    defer { free(&state->transient_memory.allocator, shader_source.data); };
+    
+    Shader_Attribute_Info attributes[] = {
+        { Vertex_Position_Index, "a_position" },
+        { Vertex_Normal_Index,   "a_normal" },
+        { Vertex_Tangent_Index,  "a_tangent" },
+        { Vertex_UV_Index,       "a_uv" },
+    };
+    
+    string uniform_names = S(STRINGIFY(WATER_SHADER_UNIFORMS));
+    
+    string global_defines = S(
+        "#version 150\n"
+        "#define MAX_LIGHT_COUNT 10\n"
+        "#define WITH_DIFFUSE_COLOR\n"
+        //"#define WITH_DIFFUSE_TEXTURE\n"
+        //"#define WITH_NORMAL_MAP\n"
+        //"#define TANGENT_TRANSFORM_PER_FRAGMENT\n"
+        );
+    
+    string vertex_shader_sources[] = {
+        global_defines,
+        S("#define VERTEX_SHADER\n"),
+        shader_source,
+    };
+    
+    string fragment_shader_sources[] = {
+        global_defines,
+        S("#define FRAGMENT_SHADER\n"),
+        shader_source,
+    };
+    
+    GLuint shader_objects[2];
+    shader_objects[0] = make_shader_object(GL_VERTEX_SHADER, ARRAY_WITH_COUNT(vertex_shader_sources), &state->transient_memory.allocator);
+    shader_objects[1] = make_shader_object(GL_FRAGMENT_SHADER, ARRAY_WITH_COUNT(fragment_shader_sources), &state->transient_memory.allocator);
+    
+    if (!shader_objects[0] || !shader_objects[1])
+        return;
+    
+    GLint uniforms[ARRAY_COUNT(state->water_shader.uniforms)];
+    
+    GLuint program_object = make_shader_program(ARRAY_WITH_COUNT(shader_objects), true, ARRAY_WITH_COUNT(attributes), uniform_names, ARRAY_WITH_COUNT(uniforms), &state->transient_memory.allocator
+                                                );
+    
+    if (program_object) {
+        if (state->water_shader.program_object) {
+            glUseProgram(0);
+            glDeleteProgram(state->water_shader.program_object);
+        }
+        
+        state->water_shader.camera_uniform_block = glGetUniformBlockIndex(program_object, "Camera_Uniform_Block");
+        glUniformBlockBinding(program_object, state->water_shader.camera_uniform_block, Camera_Uniform_Block_Index);
+        
+        state->water_shader.lighting_uniform_block = glGetUniformBlockIndex(program_object, "Lighting_Uniform_Block");
+        glUniformBlockBinding(program_object, state->water_shader.lighting_uniform_block, Lighting_Uniform_Block_Index);
+        
+        state->water_shader.program_object = program_object;
+        COPY(state->water_shader.uniforms, uniforms, sizeof(uniforms));
     }
 }
 
@@ -391,7 +520,19 @@ APP_INIT_DEC(application_init) {
         state->ui_font_material.shader.program_object = program_object;
     }
     
+    glGenBuffers(2, state->uniform_buffer_objects);
+    glBindBuffer(GL_UNIFORM_BUFFER, state->projection_uniform_buffer_object);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(Camera_Uniform_Block), null, GL_STREAM_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, Camera_Uniform_Block_Index, state->projection_uniform_buffer_object);
+    
+    glBindBuffer(GL_UNIFORM_BUFFER, state->lighting_uniform_buffer_object);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(Lighting_Uniform_Block), null, GL_STREAM_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, Lighting_Uniform_Block_Index, state->lighting_uniform_buffer_object);
+    
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    
     load_phong_shader(state, platform_api);
+    load_water_shader(state, platform_api);
     
     state->font_lib = make_font_library();
     state->font = make_font(state->font_lib, S("C:/Windows/Fonts/arial.ttf"), 10, ' ', 128, platform_api->read_file, &state->persistent_memory.allocator);
@@ -439,6 +580,12 @@ APP_INIT_DEC(application_init) {
     {
         string source = platform_api->read_file(S("meshs/asteroid_baked.glm"), &state->transient_memory.allocator);
         state->asteroid_mesh = make_mesh(source, &state->persistent_memory.allocator, &state->debug_mesh_vertex_buffers, &state->debug_mesh_vertex_count);
+        free(&state->transient_memory.allocator, source.data);
+    }
+    
+    {
+        string source = platform_api->read_file(S("meshs/uv_sphere.glm"), &state->transient_memory.allocator);
+        state->planet_mesh = make_mesh(source, &state->persistent_memory.allocator);
         free(&state->transient_memory.allocator, source.data);
     }
     
@@ -541,6 +688,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             
             init_gl();
             load_phong_shader(state, platform_api);
+            load_water_shader(state, platform_api);
             
             // make shure pointers for dynamic dispatch are valid
             state->ui_font_material.base.bind_material = bind_ui_font_material;
@@ -752,9 +900,9 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         f32 rotation = 0.0f;
         f32 accelaration = 0.0f;
         
-        f32 Max_Velocity = 58.0f;
-        f32 Acceleration = 25.0f;
-        f32 Min_Acceleraton = Acceleration * 0.1f;
+        const f32 Max_Velocity = 20.0f;
+        const f32 Acceleration = 25.0f;
+        const f32 Min_Acceleraton = Acceleration * 0.1f;
         
         if (!state->in_debug_mode || state->debug_use_game_controls) {
             if (input->keys['W'].is_active) {
@@ -775,7 +923,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             if (input->keys['D'].is_active)
                 rotation -= 1.0f;
             
-            ship->entity->orientation += rotation * PIf * delta_seconds;
+            const f32 Rotation_Speed = 2*PIf;
+            ship->entity->orientation += rotation * Rotation_Speed * delta_seconds;
             
             vec3f accelaration_vector = ship->entity->to_world_transform.up * accelaration;
             
@@ -923,6 +1072,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         for (auto body = first(bodies); body != one_past_last(bodies); ++body)
         {
             u32 first_clone_index = clones.count;
+            body->first_clone_index = first_clone_index;
             
             auto first_clone = push(&clones, null, 1, &state->transient_memory.allocator);
             first_clone->body_index          = index(bodies, body);
@@ -955,38 +1105,29 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             body->next_center   = body->sphere.center + body->velocity * body->max_timestep;
         }
         
-        for (auto clone = first(clones); clone != one_past_last(clones); ++clone)
+        Body *body_pair[2];
+        for (body_pair[0] = first(bodies); body_pair[0] != one_past_last(bodies); ++body_pair[0]) 
+            //for (auto clone = first(clones); clone != one_past_last(clones); ++clone)
         {
-            Body *body_pair[2];
-            body_pair[0] = bodies + clone->body_index;
-            Sphere3f static_sphere = clone->sphere;
+            Sphere3f moving_sphere = body_pair[0]->sphere;
             
-            for (body_pair[1] = body_pair[0] + 1; body_pair[1] != one_past_last(bodies); ++body_pair[1]) 
-                //for (auto moving_clone = clone + clone->offset_to_next_body; moving_clone != one_past_last(clones); ++moving_clone)
-            {
-                //body_pair[1] = bodies + moving_clone->body_index;
-                vec3f movement = body_pair[1]->velocity - body_pair[0]->velocity;
+            for (body_pair[1] = body_pair[0] + 1; body_pair[1] != one_past_last(bodies); ++body_pair[1]) {
+                vec3f movement = body_pair[0]->velocity - body_pair[1]->velocity;
                 
                 if (squared_length(movement) == 0.0f)
                     continue;
                 
                 f32 movement_length = length(movement);
                 
-                Sphere3f moving_sphere = body_pair[1]->sphere;
-                f32 remaining_timestep = timestep;
                 f32 whole_timestep = 0.0f;
+                f32 remaining_timestep = timestep;
                 
-                //draw_circle(imc, moving_sphere.center, moving_sphere.radius, rgba32{ 255, 0, 0, 255 });
-                //draw_line(imc, moving_sphere.center, moving_sphere.center + movement * timestep, rgba32{ 255, 255, 0, 255 });
-                
-                while (true)
-                {
+                while (true) {
                     assert(remaining_timestep > 0.0f);
                     
+                    vec3f next_moving_sphere_center;
                     f32 moving_timestep = remaining_timestep;
                     bool movement_was_split = false;
-                    
-                    vec3f next_moving_sphere_center;
                     
                     for (u32 plane_index = 0; plane_index < ARRAY_COUNT(area_planes); ++plane_index) {
                         f32 time_until_split = (area_planes[plane_index].distance_to_origin - dot(area_planes[plane_index].orthogonal, moving_sphere.center)) /
@@ -1008,89 +1149,89 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                         continue;
                     }
                     
-                    f32 t[2];
-                    u32 collision_count = movement_distance_until_collision(moving_sphere.center - static_sphere.center, movement * moving_timestep, moving_sphere.radius + static_sphere.radius, t);
-                    f32 d;
-                    switch (collision_count) {
-                        case 0:
-                        case 1: {
-                            d = 1.0f;
-                        } break;
+                    Clone_Body *first_static_clone = clones + body_pair[1]->first_clone_index;
+                    Clone_Body *one_past_last_static_clone = first_static_clone + first_static_clone->offset_to_next_body;
+                    for (auto static_clone = first_static_clone; static_clone != one_past_last_static_clone; ++static_clone)
+                    {
+                        Sphere3f static_sphere = static_clone->sphere;
                         
-                        case 2: {
-                            if (t[0] >= 1.0f) {
+                        f32 t[2];
+                        u32 collision_count = movement_distance_until_collision(moving_sphere.center - static_sphere.center, movement * moving_timestep, moving_sphere.radius + static_sphere.radius, t);
+                        f32 d;
+                        switch (collision_count) {
+                            case 0:
+                            case 1: {
                                 d = 1.0f;
-                                break;
-                            }
+                            } break;
                             
-                            if (t[0] > 0.0f) {
-                                d = MAX(0.0f, t[0] - margin / movement_length);
-                                break;
-                            }
-                            
-                            if (t[1] < 0.0f) {
-                                d = 1.0f;
-                                break;
-                            }
-                            
-                            // spheres are overlapping
-                            // find minimal time to pull them appart
-                            // either in past or in future
-                            if (-t[0] < t[1]) {
-                                // rewind time until collision
-                                //d = t[0] - margin / movement_length;
+                            case 2: {
+                                if (t[0] >= 1.0f) {
+                                    d = 1.0f;
+                                    break;
+                                }
                                 
-                                // dont rewind, just ignore small overlaps and reflect
-                                d = 0.0f;
-                            }
-                            else {
-                                // sphere passed through, so we can also continue with full movement
-                                //d = t[1] + margin / movement_length;
-                                d = 1.0f;
-                            }
-                        } break;
-                        
-                        default:
-                        UNREACHABLE_CODE;
-                    }
-                    
-#if 0
-                    // HACK: ignore small movements
-                    // also ignores rewinding time
-                    if (d < 0.001)
-                        d = 0.0f;
-#endif
-                    
-                    whole_timestep += moving_timestep * d;
-                    
-                    if (d < 1.0f) {
-                        min_allowed_timestep = MIN(min_allowed_timestep, whole_timestep);
-                        vec3f mirror_normal = normalize_or_zero(moving_sphere.center + body_pair[1]->velocity * (moving_timestep * d) - (static_sphere.center + body_pair[0]->velocity * whole_timestep));
-                        
-                        for (s32 pair_index = 0; pair_index < 2; ++pair_index) {
-                            auto body = body_pair[pair_index];
-                            
-                            if (body->max_timestep > whole_timestep) {
-                                body->max_timestep = whole_timestep;
-                                body->next_center  = body->sphere.center + body->velocity * whole_timestep;
+                                if (t[0] > 0.0f) {
+                                    d = MAX(0.0f, t[0] - margin / movement_length);
+                                    break;
+                                }
                                 
-                                // reflect velocity
-                                if (dot(mirror_normal * (pair_index * 2 - 1), body->velocity) <= 0)
-                                    body->next_velocity = body->velocity - mirror_normal * (2 * dot(mirror_normal, body->velocity));
-                                else
-                                    body->next_velocity = body->velocity;
-                            }
+                                if (t[1] < 0.0f) {
+                                    d = 1.0f;
+                                    break;
+                                }
+                                
+                                // spheres are overlapping
+                                // find minimal time to pull them appart
+                                // either in past or in future
+                                if (-t[0] < t[1]) {
+                                    // rewind time until collision
+                                    //d = t[0] - margin / movement_length;
+                                    
+                                    // dont rewind, just ignore small overlaps and reflect
+                                    d = 0.0f;
+                                }
+                                else {
+                                    // sphere passed through, so we can also continue with full movement
+                                    //d = t[1] + margin / movement_length;
+                                    d = 1.0f;
+                                }
+                            } break;
+                            
+                            default:
+                            UNREACHABLE_CODE;
                         }
                         
-                        break;
+                        if (d < 1.0f) {
+                            f32 current_timestep = whole_timestep + moving_timestep * d;
+                            
+                            min_allowed_timestep = MIN(min_allowed_timestep, current_timestep);
+                            vec3f mirror_normal = normalize_or_zero(moving_sphere.center + body_pair[0]->velocity * (moving_timestep * d) - (static_sphere.center + body_pair[1]->velocity * current_timestep));
+                            
+                            for (s32 pair_index = 0; pair_index < 2; ++pair_index) {
+                                auto body = body_pair[pair_index];
+                                
+                                if (body->max_timestep > current_timestep) {
+                                    body->max_timestep = current_timestep;
+                                    body->next_center  = body->sphere.center + body->velocity * current_timestep;
+                                    
+                                    // reflect velocity
+                                    if (dot(mirror_normal * (pair_index * -2 + 1), body->velocity) <= 0)
+                                        body->next_velocity = body->velocity - mirror_normal * (2 * dot(mirror_normal, body->velocity));
+                                    else
+                                        body->next_velocity = body->velocity;
+                                }
+                            }
+                            
+                            movement_was_split = false;
+                        }
                     }
                     
                     if (!movement_was_split)
                         break;
                     
-                    //draw_circle(imc, next_moving_sphere_center, moving_sphere.radius, rgba32{ 255, 0, 0, 255 });
-                    
+                    whole_timestep     += moving_timestep;
                     remaining_timestep -= moving_timestep;
+                    
                     moving_sphere.center = next_moving_sphere_center;
                 }
             }
@@ -1306,6 +1447,19 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     // rendering
     
+    {
+        glBindBuffer(GL_UNIFORM_BUFFER, state->projection_uniform_buffer_object);
+        auto camera_block = cast_p(Camera_Uniform_Block, glMapBuffer(GL_UNIFORM_BUFFER, GL_WRITE_ONLY));
+        camera_block->camera_to_clip_projection = state->camera_to_clip_projection;
+        
+        for (u32 i = 0; i < 4; ++i)
+            camera_block->world_to_camera_transform.columns[i] = make_vec4(state->world_to_camera_transform.columns[i], 0.0f);
+        
+        camera_block->camera_world_position = camera_world_position;
+        
+        glUnmapBuffer(GL_UNIFORM_BUFFER);
+    }
+    
     glUseProgram(state->phong_shader.program_object);
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -1328,31 +1482,26 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         ++texture_index;
     }
     
-    // upload model view matrix
-    glUniformMatrix4fv(state->phong_shader.u_camera_to_clip_projection, 1, GL_FALSE, state->camera_to_clip_projection);
-    glUniformMatrix4x3fv(state->phong_shader.u_world_to_camera_transform, 1, GL_FALSE, state->world_to_camera_transform);
-    glUniform3fv(state->phong_shader.u_camera_world_position, 1, camera_world_position);
-    
     // lights
-    
-    Light_Entity main_light;
-    main_light.world_position = VEC3_Z_AXIS * 5; //  camera_world_position;
-    //main_light.world_position = camera_world_position;
-    main_light.diffuse_color  = vec4f{1, 1, 1, 1};
-    main_light.specular_color = vec4f{1, 1, 1, 1};
-    main_light.attenuation    = 0.005f;
-    push(&light_entities, main_light);
-    
-    if (state->phong_shader.u_light_world_positions != -1)
     {
-        u32 light_index = 0;
+        Light_Entity main_light;
+        main_light.world_position = VEC3_Z_AXIS * 5; //  camera_world_position;
+        //main_light.world_position = camera_world_position;
+        main_light.diffuse_color  = vec4f{1, 1, 1, 1};
+        main_light.specular_color = vec4f{1, 1, 1, 1};
+        main_light.attenuation    = 0.005f;
+        push(&light_entities, main_light);
         
+        glBindBuffer(GL_UNIFORM_BUFFER, state->lighting_uniform_buffer_object);
+        auto lighting_block = cast_p(Lighting_Uniform_Block, glMapBuffer(GL_UNIFORM_BUFFER, GL_WRITE_ONLY));
+        
+        u32 light_index = 0;
         for (auto light_entity = first(light_entities); light_entity != one_past_last(light_entities); ++light_entity)
         {
-            glUniform3fv(state->phong_shader.u_light_world_positions + light_index, 1, light_entity->world_position);
-            glUniform4fv(state->phong_shader.u_light_diffuse_colors  + light_index, 1, light_entity->diffuse_color);
-            glUniform4fv(state->phong_shader.u_light_specular_colors + light_index, 1, light_entity->specular_color);
-            glUniform1f(state->phong_shader.u_light_attenuations + light_index, light_entity->attenuation);
+            lighting_block->world_positions_and_attenuations[light_index] = make_vec4(light_entity->world_position, light_entity->attenuation);
+            
+            lighting_block->diffuse_colors[light_index] = light_entity->diffuse_color;
+            lighting_block->specular_colors[light_index] = light_entity->specular_color;
             
             if (state->in_debug_mode) {
                 draw_circle(imc, light_entity->world_position, squared_length(light_entity->diffuse_color), make_rgba32(light_entity->diffuse_color));
@@ -1364,7 +1513,9 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         ui_printf(ui, 5, 60, S("uniform light count: %"), f(light_index));
         
-        glUniform1ui(state->phong_shader.u_light_count, light_index);
+        lighting_block->count = light_index;
+        
+        glUnmapBuffer(GL_UNIFORM_BUFFER);
     }
     
     // render queue draw entities
@@ -1379,6 +1530,34 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         glUniform1f(state->phong_shader.u_shininess, draw_entity->shininess);
         
         draw(&draw_entity->mesh->batch, 0);
+    }
+    
+    {
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        //glDisable(GL_CULL_FACE);
+        //defer { glEnable(GL_CULL_FACE); };
+        //glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        
+        glUseProgram(state->water_shader.program_object);
+        
+        glUniform4fv(state->water_shader.u_ambient_color, 1, vec4f{});
+        glUniform4fv(state->water_shader.u_diffuse_color, 1, vec4f{ 0.0f, 0.935f, 1.0f, 0.25f });
+        
+        static float phase = 0.0f;
+        phase += delta_seconds;
+        if (phase >= 1.0f)
+            phase -= 1.0f;
+        
+        glUniform1f(state->water_shader.u_phase, phase);
+        
+        mat4x3f transform = make_transform(QUAT_IDENTITY, vec3f{ 5.0, 3.0f, 0.0f });
+        
+        glUniformMatrix4x3fv(state->water_shader.u_object_to_world_transform, 1, GL_FALSE, transform);
+        glUniform1f(state->water_shader.u_shininess, 16.0f);
+        
+        draw(&state->planet_mesh.batch, 0);
     }
     
     //draw_and_flush(imc);
