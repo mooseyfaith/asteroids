@@ -37,14 +37,20 @@ struct Entity {
     Ship_Entity *ship;
     Entity *parent;
     bool mark_for_destruction;
+    
+    u32 hp;
 };
 
 struct Body {
     Sphere3f sphere;
     vec3f velocity;
-    vec3f next_center;
-    vec3f next_velocity;
-    f32 max_timestep;
+    //vec3f next_center;
+    //vec3f next_velocity;
+    
+    f32 velocity_accumulated_orientation;
+    u32 velocity_change_count;
+    
+    //f32 max_timestep;
     u32 entity_index;
     u32 first_clone_index;
     bool destroy_on_collision;
@@ -63,6 +69,16 @@ struct Clone_Body {
 
 #define Template_Array_Type      Clone_Body_Array
 #define Template_Array_Data_Type Clone_Body
+#include "template_array.h"
+
+struct Collision_Pair {
+    Body *body_pair[2];
+    Sphere3f spheres[2];
+    u32 collision_kind;
+};
+
+#define Template_Array_Type      Collision_Pair_Array
+#define Template_Array_Data_Type Collision_Pair
 #include "template_array.h"
 
 struct Ship_Entity {
@@ -468,12 +484,14 @@ void spawn_asteroid(Application_State *state, vec3f position, vec3f velocity, f3
     asteroid->to_world_transform.translation = position;
     asteroid->angular_rotation_axis = random_unit_vector();
     asteroid->angular_velocity = random_f32(0.0f, 2 * PIf);
+    
+    asteroid->hp = 32;
 }
 
 void spawn_bullet(Application_State *state) {
     Entity *bullet = push(&state->entities, {});
     
-    const f32 Bullet_Velocity = 20;
+    const f32 Bullet_Velocity = 30;
     
     bullet->velocity = state->ship.entity->to_world_transform.up * Bullet_Velocity;
     bullet->diffuse_color = vec4f{ 0.2f, 0.2f, 1.0f, 1.0f };
@@ -1070,7 +1088,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     if (state->pause_game)
         max_timestep = 2.0f;
     
-    static u32 max_physics_step_count = 0;
+    static u32 max_physics_step_count = 100;
     
     if (was_pressed(input->keys[VK_F9]))
         max_physics_step_count = 0;
@@ -1081,7 +1099,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     if (was_pressed(input->keys[VK_F11]))
         ++max_physics_step_count;
     
-    f32 margin = 0.1f;
+    f32 margin = 0.2f;
     
     Body_Array bodies = {};
     defer { if (bodies.count) free(&state->transient_memory.allocator, bodies.data); };
@@ -1169,10 +1187,16 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                 }
             }
             
+#if 0            
             body->next_velocity = body->velocity;
             body->max_timestep  = timestep;
             body->next_center   = body->sphere.center + body->velocity * body->max_timestep;
+#endif
+            
         }
+        
+        Collision_Pair_Array collisions = {};
+        defer { if (collisions.count) free(&state->transient_memory.allocator, collisions.data); };
         
         Body *body_pair[2];
         for (body_pair[0] = first(bodies); body_pair[0] != one_past_last(bodies); ++body_pair[0]) 
@@ -1228,6 +1252,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                         continue;
                     }
                     
+                    f32 relative_margin = margin / (moving_timestep * movement_length);
+                    
                     Clone_Body *first_static_clone = clones + body_pair[1]->first_clone_index;
                     Clone_Body *one_past_last_static_clone = first_static_clone + first_static_clone->offset_to_next_body;
                     for (auto static_clone = first_static_clone; static_clone != one_past_last_static_clone; ++static_clone)
@@ -1245,12 +1271,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                             
                             case 2: {
                                 if (t[0] >= 1.0f) {
-                                    d = 1.0f;
+                                    d = MIN(1.0f, t[0] - relative_margin);
+                                    // d = 1.0f;
                                     break;
                                 }
                                 
                                 if (t[0] > 0.0f) {
-                                    d = MAX(0.0f, t[0] - margin / movement_length);
+                                    d = MAX(0.0f, t[0] - relative_margin);
                                     break;
                                 }
                                 
@@ -1264,14 +1291,14 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                                 // either in past or in future
                                 if (-t[0] < t[1]) {
                                     // rewind time until collision
-                                    //d = t[0] - margin / movement_length;
+                                    //d = t[0] - relative_margin;
                                     
                                     // dont rewind, just ignore small overlaps and reflect
                                     d = 0.0f;
                                 }
                                 else {
                                     // sphere passed through, so we can also continue with full movement
-                                    //d = t[1] + margin / movement_length;
+                                    //d = t[1] + relative_margin;
                                     d = 1.0f;
                                 }
                             } break;
@@ -1283,9 +1310,33 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                         if (d < 1.0f) {
                             f32 current_timestep = whole_timestep + moving_timestep * d;
                             
+#if 0                                
                             min_allowed_timestep = MIN(min_allowed_timestep, current_timestep);
                             vec3f mirror_normal = normalize_or_zero(moving_sphere.center + body_pair[0]->velocity * (moving_timestep * d) - (static_sphere.center + body_pair[1]->velocity * current_timestep));
+#endif
                             
+                            if (current_timestep < min_allowed_timestep) {
+                                min_allowed_timestep = current_timestep;
+                                if (collisions.count) {
+                                    free(&state->transient_memory.allocator, collisions.data);
+                                    collisions = {};
+                                }
+                            }
+                            
+                            if (current_timestep == min_allowed_timestep) {
+                                Collision_Pair pair;
+                                COPY(pair.body_pair, body_pair, sizeof(body_pair));
+                                pair.collision_kind = collision_kind;
+                                pair.spheres[0].center = moving_sphere.center + body_pair[0]->velocity * (moving_timestep * d);
+                                pair.spheres[0].radius = moving_sphere.radius;
+                                
+                                pair.spheres[1].center = static_sphere.center + body_pair[1]->velocity * current_timestep;
+                                pair.spheres[1].radius = static_sphere.radius;
+                                
+                                push(&collisions, pair, &state->transient_memory.allocator);
+                            }
+                            
+#if 0                                
                             for (s32 pair_index = 0; pair_index < 2; ++pair_index) {
                                 auto body = body_pair[pair_index];
                                 
@@ -1296,6 +1347,10 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                                     if (body->destroy_on_collision)
                                         body->was_destroyed = true;
                                     
+                                    f32 damage_intensity =-dot(normalize_or_zero(body_pair[1 - pair_index]->sphere.center - body->sphere.center), normalize_or_zero(body_pair[1 - pair_index]->velocity));
+                                    
+                                    body->next_hp = body->hp - damage * MIN(1, cast_v(u32, damage_intensity * 4 + 0.5f));
+                                    
                                     // reflect velocity
                                     if (reflection_table[collision_kind] && (dot(mirror_normal * (pair_index * -2 + 1), body->velocity) <= 0))
                                         body->next_velocity = body->velocity - mirror_normal * (2 * dot(mirror_normal, body->velocity));
@@ -1303,6 +1358,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                                         body->next_velocity = body->velocity;
                                 }
                             }
+#endif
                             
                             movement_was_split = false;
                         }
@@ -1318,6 +1374,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                 }
             }
         }
+        
         
         rgba32 old_timestep_color = make_rgba32(vec3f{ 0, 0, 1 } * ((max_timestep - timestep) / max_timestep));
         rgba32 new_timestep_color = make_rgba32(vec3f{ 0, 0, 1 } * ((max_timestep - timestep + min_allowed_timestep) / max_timestep));
@@ -1336,10 +1393,33 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             
             vec3f old_center = body->sphere.center;
             
-            body->sphere.center = body->next_center;
+            body->sphere.center = body->sphere.center + body->velocity * min_allowed_timestep;
             
             if (body->was_destroyed)
                 continue;
+            
+#if 0            
+            
+            u32 damage = (body->hp - body->next_hp) / 2;
+            body->hp = body->next_hp;
+            
+            if (damage) {
+                auto entity = state->entities + body->entity_index;
+                auto new_entity = push(&state->entities, state->entities[body->entity_index]);
+                
+                auto new_body = push(&bodies, *body, &state->transient_memory.allocator);
+                body->max_hp = damage;
+                body->hp = body->max_hp;
+                body->entity_index = index(state->entities, new_entity);
+                new_entity->scale = entity->scale * 0.5;
+                new_entity->radius = entity->radius * 0.5;
+                
+            }
+            
+            while (body->hp <= body->max_hp/2) {
+                body->max_hp /= 2;
+            }
+#endif
             
             f32 min_distance_to_border = min_allowed_timestep;
             
@@ -1376,7 +1456,65 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             draw_line(imc, old_center, body->sphere.center, old_timestep_color, true, new_timestep_color);
             draw_circle(imc, body->sphere.center, body->sphere.radius, new_timestep_color);
             
-            body->velocity = body->next_velocity;
+            //body->velocity = body->next_velocity;
+            //body->next_velocity = body->velocity;
+            body->velocity_accumulated_orientation = 0.0f;
+            body->velocity_change_count = 0;
+        }
+        
+        for (auto collision = first(collisions); collision != one_past_last(collisions); ++collision) {
+            vec3f mirror_normal = normalize_or_zero(collision->spheres[0].center - collision->spheres[1].center);
+            
+            draw_line(imc, collision->spheres[0].center, collision->spheres[1].center, rgba32{ 255, 255, 0, 255 });
+            
+            u32 reflection_count = 0;
+            
+            for (s32 pair_index = 0; pair_index < 2; ++pair_index) {
+                auto body = collision->body_pair[pair_index];
+                
+                if (body->destroy_on_collision)
+                    body->was_destroyed = true;
+                
+#if 0                
+                f32 damage_intensity = -dot(normalize_or_zero(collision->body_pair[1 - pair_index]->sphere.center - body->sphere.center), normalize_or_zero(collision->body_pair[1 - pair_index]->velocity));
+                
+                body->next_hp = body->hp - damage * MIN(1, cast_v(u32, damage_intensity * 4 + 0.5f));
+#endif
+                
+                // reflect velocity
+                if (reflection_table[collision->collision_kind] && (dot(mirror_normal * (pair_index * -2 + 1), body->velocity) < 0)) {
+                    reflection_count++;
+                    //body->next_velocity = reflect(mirror_normal, body->velocity);
+                    
+                    vec3f normalized_velocity = normalize_or_zero(reflect(mirror_normal, body->velocity));
+                    
+                    f32 alpha = acos(dot(VEC3_Y_AXIS, normalized_velocity));
+                    f32 cos_beta = dot(VEC3_X_AXIS, normalized_velocity);
+                    
+                    if (cos_beta > 0)
+                        alpha *= -1;
+                    
+                    body->velocity_accumulated_orientation += alpha;
+                    body->velocity_change_count++;
+                }
+            }
+            
+            //assert(!reflection_table[collision->collision_kind] || reflection_count);
+            
+            if (reflection_table[collision->collision_kind] && !reflection_count) {
+                draw_circle(imc, collision->body_pair[0]->sphere.center, collision->body_pair[0]->sphere.radius, rgba32{ 255, 0, 0, 255 });
+                draw_circle(imc, collision->body_pair[1]->sphere.center, collision->body_pair[1]->sphere.radius, rgba32{ 255, 0, 0, 255 });
+                
+                timestep = 0.0f;
+            }
+        }
+        
+        for (auto body = first(bodies); body != one_past_last(bodies); ++body) {
+            if (body->velocity_change_count) {
+                mat4x3f rotation = make_transform(make_quat(VEC3_Z_AXIS, body->velocity_accumulated_orientation / body->velocity_change_count));
+                
+                body->velocity = transform_direction(rotation, VEC3_Y_AXIS * length(body->velocity));
+            }
         }
         
         ++physics_step_count;
@@ -1417,7 +1555,8 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     ui_printf(ui, 5, 120, S("physics iteration count: % (%)"), f(physics_interation_count_average), f(physics_interation_max_count));
     ui_printf(ui, 5, 90, S("fps: %"), f(fps_average));
     
-    if (!state->pause_game) {
+    if (!state->pause_game && (physics_step_count != max_physics_step_count)) {
+        
         for (auto body = first(bodies); body != one_past_last(bodies); ++body) {
             state->entities[body->entity_index].to_world_transform.translation = body->sphere.center;
             state->entities[body->entity_index].velocity                       = body->velocity;
