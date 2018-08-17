@@ -37,9 +37,9 @@ rem end of live-code-editing check
 
 rem echo buid directory %cd%
 
-set mode="debug"
+set mode=debug
 
-if %mode%=="debug" (
+if %mode%==debug (
   set libs=%libs% "%moose_dir%\3rdparty\freetype\lib\freetyped.lib"
   set options=%options% /Od /DDEBUG /MTd
   echo debug mode

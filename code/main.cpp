@@ -12,6 +12,13 @@
 
 struct Ship_Entity;
 
+enum Entity_Kind {
+    Ship_Kind = 0,
+    Asteroid_Kind,
+    Bullet_Kind,
+    Entity_Kind_Count,
+};
+
 struct Entity {
     mat4x3f to_world_transform;
     f32 orientation;
@@ -24,11 +31,12 @@ struct Entity {
     
     vec4 diffuse_color;
     vec4 specular_color;
-    bool is_asteroid;
     bool is_light;
+    u32 kind;
     Mesh *mesh;
     Ship_Entity *ship;
     Entity *parent;
+    bool mark_for_destruction;
 };
 
 struct Body {
@@ -39,6 +47,8 @@ struct Body {
     f32 max_timestep;
     u32 entity_index;
     u32 first_clone_index;
+    bool destroy_on_collision;
+    bool was_destroyed;
 };
 
 #define Template_Array_Type      Body_Array
@@ -54,7 +64,6 @@ struct Clone_Body {
 #define Template_Array_Type      Clone_Body_Array
 #define Template_Array_Data_Type Clone_Body
 #include "template_array.h"
-
 
 struct Ship_Entity {
     Entity *entity;
@@ -435,11 +444,22 @@ vec3f random_unit_vector(bool random_x = true, bool random_y = true, bool random
     return normalize_or_zero(result);
 }
 
+u32 get_collision_kind(u32 entity_kind_a, u32 entity_kind_b) {
+    if (entity_kind_a < entity_kind_b)
+        return entity_kind_a * (Entity_Kind_Count - (entity_kind_a - 1) * 0.5f) + entity_kind_b - entity_kind_a;
+    else
+        return entity_kind_b * (Entity_Kind_Count - (entity_kind_b - 1) * 0.5f) + entity_kind_a - entity_kind_b;
+}
+
+u32 no_collision_kind() {
+    return get_collision_kind(Entity_Kind_Count, Entity_Kind_Count);
+}
+
 void spawn_asteroid(Application_State *state, vec3f position, vec3f velocity, f32 scale, vec4f color) {
     Entity *asteroid = push(&state->entities, {});
     asteroid->velocity = random_unit_vector(true, true, false) * random_f32(3.0f, 10.0f);
     asteroid->diffuse_color = color;
-    asteroid->is_asteroid = true;
+    asteroid->kind = Asteroid_Kind;
     asteroid->mesh = &state->asteroid_mesh;
     asteroid->scale = scale;
     asteroid->radius = scale * 1.0f;
@@ -448,6 +468,25 @@ void spawn_asteroid(Application_State *state, vec3f position, vec3f velocity, f3
     asteroid->to_world_transform.translation = position;
     asteroid->angular_rotation_axis = random_unit_vector();
     asteroid->angular_velocity = random_f32(0.0f, 2 * PIf);
+}
+
+void spawn_bullet(Application_State *state) {
+    Entity *bullet = push(&state->entities, {});
+    
+    const f32 Bullet_Velocity = 20;
+    
+    bullet->velocity = state->ship.entity->to_world_transform.up * Bullet_Velocity;
+    bullet->diffuse_color = vec4f{ 0.2f, 0.2f, 1.0f, 1.0f };
+    bullet->kind = Bullet_Kind;
+    bullet->mesh = &state->beam_mesh;
+    bullet->scale = 1.0f;
+    bullet->radius = bullet->scale * 1.0f;
+    
+    bullet->to_world_transform = state->ship.entity->to_world_transform;
+    bullet->to_world_transform.translation += bullet->to_world_transform.up * (state->ship.entity->radius * 2);
+    bullet->orientation = state->ship.entity->orientation;
+    bullet->angular_rotation_axis = VEC3_Z_AXIS;
+    bullet->angular_velocity = 0;
 }
 
 APP_INIT_DEC(application_init) {
@@ -541,7 +580,7 @@ APP_INIT_DEC(application_init) {
     state->ui_font_material.base.bind_material = bind_ui_font_material;
     state->ui_font_material.texture = &state->font.texture;
     
-    state->entities = ALLOCATE_ARRAY_INFO(&state->persistent_memory.allocator, Entity, 20);
+    state->entities = ALLOCATE_ARRAY_INFO(&state->persistent_memory.allocator, Entity, 512);
     
     // make ship
     
@@ -559,6 +598,7 @@ APP_INIT_DEC(application_init) {
         state->ship.entity->radius = state->ship.entity->scale * 1.0f;
         state->ship.entity->angular_rotation_axis = VEC3_Z_AXIS;
         state->ship.entity->angular_velocity = 0;
+        state->ship.entity->kind = Ship_Kind;
         // will be updated anyway
         state->ship.entity->to_world_transform = MAT4X3_IDENTITY;
         
@@ -589,6 +629,12 @@ APP_INIT_DEC(application_init) {
         free(&state->transient_memory.allocator, source.data);
     }
     
+    {
+        string source = platform_api->read_file(S("meshs/asteroids_beam.glm"), &state->transient_memory.allocator);
+        state->beam_mesh = make_mesh(source, &state->persistent_memory.allocator);
+        free(&state->transient_memory.allocator, source.data);
+    }
+    
     state->camera.to_world_transform = make_transform(QUAT_IDENTITY, vec3f{ 0.0f, 0.0f, 80.0f });
     state->main_window_area = { -1, -1, cast_v(s16, 400 * width_over_height(Reference_Resolution)), 400 };
     
@@ -598,8 +644,6 @@ APP_INIT_DEC(application_init) {
     
     for (u32 i = 0; i < 16; ++i)
         spawn_asteroid(state, random_unit_vector(true, true, false) * random_f32(10.0f, 30.0f), vec3f{ 1.0f, 1.0f, 0.0f }, 3.0f, make_vec4(random_unit_vector() * 0.5f + vec3f{1.0f, 1.0f, 1.0f}));
-    
-    //state->pause_game = true;
     
     return state;
 }
@@ -932,6 +976,10 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             f32 v2 = MIN(squared_length(ship->entity->velocity), Max_Velocity * Max_Velocity);
             
             ship->entity->velocity = normalize_or_zero(ship->entity->velocity) * sqrt(v2);
+            
+            if (was_pressed(input->keys['J'])) {
+                spawn_bullet(state);
+            }
         }
         
         // turn thrusters on or off
@@ -1012,9 +1060,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     }
 #endif
     
-    Draw_Entity_Buffer  draw_entities  = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Draw_Entity, state->entities.count * 4);
-    Light_Entity_Buffer light_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Light_Entity, 10);
-    
     // update physics and add draw, light entities
     
 #if 1
@@ -1039,6 +1084,7 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     f32 margin = 0.1f;
     
     Body_Array bodies = {};
+    defer { if (bodies.count) free(&state->transient_memory.allocator, bodies.data); };
     
     for (auto entity = first(state->entities); entity != one_past_last(state->entities); ++entity) {
         if (entity->parent)
@@ -1048,6 +1094,13 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         body->entity_index = index(state->entities, entity);
         body->sphere = { entity->to_world_transform.translation, entity->radius };
         body->velocity = entity->velocity;
+        
+        if (entity->kind == Bullet_Kind)
+            body->destroy_on_collision = true;
+        else
+            body->destroy_on_collision = false;
+        
+        body->was_destroyed = false;
         
         draw_circle(imc, entity->to_world_transform.translation, entity->radius, rgba32{ 255, 255, 0, 255 });
     }
@@ -1060,6 +1113,19 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     
     draw_rect(imc, vec3f{ debug_step_x, debug_step_y - debug_step_height * 0.5f }, vec3f{ debug_step_with }, vec3f{ 0, debug_step_height }, rgba32{ 255, 255, 255, 255 });
     
+    bool collision_table[RANGE_SUM(Entity_Kind_Count)] = {};
+    
+    collision_table[get_collision_kind(Asteroid_Kind, Asteroid_Kind)] = true;
+    collision_table[get_collision_kind(Ship_Kind    , Asteroid_Kind)] = true;
+    collision_table[get_collision_kind(Bullet_Kind  , Asteroid_Kind)] = true;
+    
+    bool reflection_table[RANGE_SUM(Entity_Kind_Count)] = {};
+    
+    reflection_table[get_collision_kind(Asteroid_Kind, Asteroid_Kind)] = true;
+    reflection_table[get_collision_kind(Ship_Kind    , Asteroid_Kind)] = true;
+    reflection_table[get_collision_kind(Ship_Kind    , Ship_Kind)]     = true;
+    
+    
     f32 timestep = max_timestep;
     u32 physics_step_count = 0;
     while ((!max_physics_step_count || (physics_step_count < max_physics_step_count)) && (timestep > 0.00001f)) 
@@ -1071,6 +1137,9 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         for (auto body = first(bodies); body != one_past_last(bodies); ++body)
         {
+            if (body->was_destroyed)
+                continue;
+            
             u32 first_clone_index = clones.count;
             body->first_clone_index = first_clone_index;
             
@@ -1107,11 +1176,21 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         Body *body_pair[2];
         for (body_pair[0] = first(bodies); body_pair[0] != one_past_last(bodies); ++body_pair[0]) 
-            //for (auto clone = first(clones); clone != one_past_last(clones); ++clone)
         {
+            if (body_pair[0]->was_destroyed)
+                continue;
+            
             Sphere3f moving_sphere = body_pair[0]->sphere;
             
             for (body_pair[1] = body_pair[0] + 1; body_pair[1] != one_past_last(bodies); ++body_pair[1]) {
+                if (body_pair[1]->was_destroyed)
+                    continue;
+                
+                u32 collision_kind = get_collision_kind(state->entities[body_pair[0]->entity_index].kind, state->entities[body_pair[1]->entity_index].kind);
+                
+                if (!collision_table[collision_kind])
+                    continue;
+                
                 vec3f movement = body_pair[0]->velocity - body_pair[1]->velocity;
                 
                 if (squared_length(movement) == 0.0f)
@@ -1214,8 +1293,11 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
                                     body->max_timestep = current_timestep;
                                     body->next_center  = body->sphere.center + body->velocity * current_timestep;
                                     
+                                    if (body->destroy_on_collision)
+                                        body->was_destroyed = true;
+                                    
                                     // reflect velocity
-                                    if (dot(mirror_normal * (pair_index * -2 + 1), body->velocity) <= 0)
+                                    if (reflection_table[collision_kind] && (dot(mirror_normal * (pair_index * -2 + 1), body->velocity) <= 0))
                                         body->next_velocity = body->velocity - mirror_normal * (2 * dot(mirror_normal, body->velocity));
                                     else
                                         body->next_velocity = body->velocity;
@@ -1255,6 +1337,9 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
             vec3f old_center = body->sphere.center;
             
             body->sphere.center = body->next_center;
+            
+            if (body->was_destroyed)
+                continue;
             
             f32 min_distance_to_border = min_allowed_timestep;
             
@@ -1333,13 +1418,29 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
     ui_printf(ui, 5, 90, S("fps: %"), f(fps_average));
     
     if (!state->pause_game) {
-        
         for (auto body = first(bodies); body != one_past_last(bodies); ++body) {
             state->entities[body->entity_index].to_world_transform.translation = body->sphere.center;
             state->entities[body->entity_index].velocity                       = body->velocity;
+            
+            if (body->was_destroyed) {
+                state->entities[body->entity_index].mark_for_destruction = true;
+            }
+        }
+        
+        for (auto entity = first(state->entities); entity != one_past_last(state->entities); ++entity) {
+            if (entity->mark_for_destruction) {
+                unordered_remove(&state->entities, index(state->entities, entity));
+                --entity; // repeat current entity index
+            }
         }
     }
 #endif
+    
+    Draw_Entity_Buffer  draw_entities  = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Draw_Entity, state->entities.count * 4);
+    defer { free(&state->transient_memory.allocator, draw_entities.data); };
+    
+    Light_Entity_Buffer light_entities = ALLOCATE_ARRAY_INFO(&state->transient_memory.allocator, Light_Entity, 10);
+    defer { free(&state->transient_memory.allocator, light_entities.data); };
     
     for (auto entity = first(state->entities); entity != one_past_last(state->entities); ++entity)
     {
@@ -1559,8 +1660,6 @@ APP_MAIN_LOOP_DEC(application_main_loop) {
         
         draw(&state->planet_mesh.batch, 0);
     }
-    
-    //draw_and_flush(imc);
     
     if (input->keys[VK_TAB].is_active) 
     {
