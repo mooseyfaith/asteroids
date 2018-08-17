@@ -1,0 +1,109 @@
+
+#if defined VERTEX_SHADER
+
+#  define VERTEX_OUT out
+
+#elif defined FRAGMENT_SHADER
+
+#  define VERTEX_OUT in
+
+#else
+
+#  error define VERTEX_SHADER or FRAGMENT_SHADER befor makeing a shader object
+
+#endif
+
+///////////////////////////////////////////////////////////////////////////////
+//  OPTIONS                                                                  // 
+///////////////////////////////////////////////////////////////////////////////
+
+// WITH_DIFFUSE_TEXTURE
+// WITH_VERTEX_COLOR
+// WITH_SATURATION
+// ALPHA_THRESHOLD as f32
+
+///////////////////////////////////////////////////////////////////////////////
+//  INTERFACE                                                                // 
+///////////////////////////////////////////////////////////////////////////////
+
+layout (std140, column_major) uniform Camera_Uniform_Block
+{ 
+	mat4   u_camera_to_clip_projection;
+	mat4x3 u_world_to_camera_transform;
+	vec3   u_camera_world_position;
+};
+
+uniform mat4      u_camera_to_clip_projection;
+uniform sampler2D u_diffuse_texture;
+
+#if defined VERTEX_SHADER
+
+in vec3  a_position;
+in vec4  a_color;
+in vec2  a_uv;
+in float a_saturation;
+in float a_texture_blend;
+
+#endif
+
+VERTEX_OUT vec4  color;
+VERTEX_OUT vec2  uv;
+VERTEX_OUT float saturation;
+VERTEX_OUT float texture_blend;
+
+#if defined FRAGMENT_SHADER
+
+out vec4 fragment_color;
+
+#endif
+
+
+///////////////////////////////////////////////////////////////////////////////
+//  VERTEX_SHADER                                                            // 
+///////////////////////////////////////////////////////////////////////////////
+
+#if defined VERTEX_SHADER
+
+void main() {
+	uv            = a_uv;
+	color         = a_color;
+	saturation    = a_saturation;
+	texture_blend = a_texture_blend;
+
+	gl_Position = u_camera_to_clip_projection * vec4(a_position, 1);
+}
+
+#endif
+
+
+///////////////////////////////////////////////////////////////////////////////
+//  FRAGMENT_SHADER                                                          // 
+///////////////////////////////////////////////////////////////////////////////
+
+#if defined FRAGMENT_SHADER
+
+void main() {
+	vec4 diffuse_color = vec4(1);
+
+#if defined WITH_VERTEX_COLOR
+	diffuse_color *= color;
+#endi
+
+#if defined WITH_DIFFUSE_TEXTURE
+	diffuse_color = mix(diffuse_color, diffuse_color * texture(u_diffuse_texture, uv), texture_blend);
+#endif
+
+#if defined ALPHA_THRESHOLD
+	if (diffuse_color.a < ALPHA_THRESHOLD)
+		discard;
+#endif
+
+#if defined WITH_SATURATION
+	float gray = (diffuse_color.r + diffuse_color.g + diffuse_color.b) / 3;
+	diffuse_color = mix(diffuse_color, vec4(vec3(gray), diffuse_color.a), saturation);
+#endif
+
+	fragment_color = diffuse_color;
+}
+
+#endif
