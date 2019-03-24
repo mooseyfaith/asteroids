@@ -1,6 +1,7 @@
 # Asteroids
 
 !!NOT WORKING FOR NOW!!
+!! a release with the old mooselib version is available for compilation !!
 
 An Asteroids clone using mooselib.
 
